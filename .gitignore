@@ -16,3 +16,7 @@ desktop.ini
 
 # Pacote da extensão
 *.zip
+
+# Dados privados de reunião e logs do sync — nunca versionar
+transcricoes/
+scripts/*.log
