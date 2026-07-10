@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Transcreve Agenda</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div class="brand-text">
+        <h1>Transcreve Agenda</h1>
+        <p class="tagline">Legendas ao vivo do Teams viram transcrição — local, sem enviar áudio.</p>
+      </div>
+    </header>
+
+    <section class="status" aria-live="polite">
+      <div class="status-row">
+        <span class="status-dot off" id="capDot" aria-hidden="true"></span>
+        <span id="capLabel">Parado</span>
+      </div>
+      <div class="status-row">
+        <span class="status-dot off" id="capDetectedDot" aria-hidden="true"></span>
+        <span id="capDetectedLabel">Legendas: —</span>
+      </div>
+      <div class="status-metric">
+        <strong id="countValue">0</strong>
+        <span>falas capturadas</span>
+      </div>
+    </section>
+
+    <p class="hint" id="hint" role="status" hidden></p>
+
+    <label class="auto-toggle" for="autoToggle">
+      <input type="checkbox" id="autoToggle" checked />
+      <span class="auto-toggle-text">
+        <strong>Modo automático</strong>
+        <small>captura sozinho quando a legenda aparece</small>
+      </span>
+    </label>
+
+    <label class="auto-toggle" for="saveToggle">
+      <input type="checkbox" id="saveToggle" checked />
+      <span class="auto-toggle-text">
+        <strong>Salvar automaticamente ao fim da reunião</strong>
+        <small>grava um .md em Downloads › Transcricoes Teams</small>
+      </span>
+    </label>
+
+    <div class="controls" id="manualControls" hidden>
+      <button id="btnStart" class="btn btn-primary" type="button">Iniciar captura</button>
+      <button id="btnStop" class="btn" type="button" disabled>Parar</button>
+      <button id="btnClear" class="btn btn-ghost" type="button">Limpar</button>
+    </div>
+
+    <div class="controls">
+      <button id="btnClearAuto" class="btn btn-ghost" type="button">Limpar transcrição</button>
+      <button id="btnDiag" class="btn" type="button">Diagnóstico do DOM</button>
+    </div>
+
+    <section class="transcript" aria-label="Transcrição ao vivo">
+      <ol id="transcriptList" class="transcript-list"></ol>
+      <p id="emptyState" class="empty">
+        Nenhuma fala capturada ainda. Ative as legendas ao vivo no Teams e clique em
+        <strong>Iniciar captura</strong>.
+      </p>
+    </section>
+
+    <section class="history" id="historySection" hidden>
+      <div class="history-head">
+        <span class="export-label">Sessões anteriores</span>
+      </div>
+      <ol id="historyList" class="history-list"></ol>
+    </section>
+
+    <footer class="export">
+      <div class="export-group">
+        <span class="export-label">Exportar (sessão atual)</span>
+        <div class="export-buttons">
+          <button class="btn btn-export" type="button" data-format="md">.md</button>
+          <button class="btn btn-export" type="button" data-format="txt">.txt</button>
+          <button class="btn btn-export" type="button" data-format="json">.json</button>
+        </div>
+      </div>
+      <button
+        id="btnSummarize"
+        class="btn btn-soon"
+        type="button"
+        disabled
+        title="Fase 2: resumo automático via Claude. Ainda não disponível."
+      >
+        Resumir no Claude (em breve)
+      </button>
+    </footer>
+
+    <script src="transcript-core.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

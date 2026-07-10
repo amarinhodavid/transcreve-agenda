@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mock Teams — harness de legendas</title>
+    <style>
+      body {
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: #12141f;
+        color: #eef0f8;
+        margin: 0;
+        padding: 22px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+      }
+      h2 {
+        margin: 0 0 10px;
+        font-size: 15px;
+      }
+      .panel {
+        background: #1a1d2c;
+        border: 1px solid #2a3050;
+        border-radius: 10px;
+        padding: 14px;
+      }
+      /* Reproduz os data-tid que o dom-adapter procura. */
+      #captions {
+        min-height: 180px;
+      }
+      [data-tid="closed-caption-message"] {
+        padding: 6px 8px;
+        border-bottom: 1px solid #23283f;
+      }
+      [data-tid="author"] {
+        color: #8a8ef0;
+        font-weight: 650;
+        font-size: 12px;
+      }
+      [data-tid="closed-caption-text"] {
+        display: block;
+        font-size: 13px;
+      }
+      #result .final {
+        padding: 6px 8px;
+        border-bottom: 1px solid #23283f;
+        font-size: 13px;
+      }
+      #result .final .who {
+        color: #46d19e;
+        font-weight: 650;
+      }
+      .assert {
+        margin-top: 12px;
+        font-size: 13px;
+      }
+      .assert .pass {
+        color: #46d19e;
+      }
+      .assert .fail {
+        color: #ff6b7d;
+      }
+      .bar {
+        grid-column: 1 / -1;
+        font-size: 12px;
+        color: #9aa2c4;
+      }
+      code {
+        color: #f4cd84;
+      }
+    </style>
+  </head>
+  <body>
+    <p class="bar">
+      Harness estático: simula o Teams reescrevendo a mesma linha de legenda
+      (parcial → final) e roda a MESMA lógica de <code>dom-adapter.js</code> +
+      <code>transcript-core.js</code> usada na extensão. Abra o console para o log
+      completo.
+    </p>
+
+    <section class="panel">
+      <h2>Legendas simuladas (DOM do Teams)</h2>
+      <!-- Espelha [data-tid="closed-captions-renderer"] do Teams real. -->
+      <div id="captions" data-tid="closed-captions-renderer"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Transcrição capturada (final, sem duplicar)</h2>
+      <div id="result"></div>
+      <div class="assert" id="assert"></div>
+    </section>
+
+    <section class="panel" style="grid-column: 1 / -1">
+      <h2>Teams v2 — a nova cadeia de seletores casa?</h2>
+      <p style="font-size: 12px; color: #9aa2c4; margin-top: 0">
+        DOM no formato <code>teams.microsoft.com/v2</code>: wrapper
+        <code>closed-caption-v2-window-wrapper</code> + lista virtual
+        <code>closed-caption-v2-virtual-list-content</code>, cada legenda com
+        <code>data-tid="author"</code> e o texto num <code>span</code> irmão.
+        Prova que <code>findCaptions</code> acha o container por seletor (não
+        heurística) e que <code>extractCaptionItems</code> separa falante e fala.
+      </p>
+      <!-- host escondido: isola o v2 do harness v1 acima. -->
+      <div id="v2host" hidden></div>
+      <div class="assert" id="v2assert"></div>
+    </section>
+
+    <!-- Mesmos arquivos da extensão, sem modificação. -->
+    <script src="../transcript-core.js"></script>
+    <script src="../dom-adapter.js"></script>
+    <script>
+      'use strict';
+
+      // Roteiro: cada fala aparece em parciais crescentes e depois some do DOM,
+      // exatamente como o Teams faz. 3 falantes, texto final conhecido.
+      const SCRIPT = [
+        { speaker: 'Ana Souza', parts: ['Bom dia', 'Bom dia a todos', 'Bom dia a todos, vamos começar?'] },
+        { speaker: 'Bruno Lima', parts: ['Claro', 'Claro, eu trouxe', 'Claro, eu trouxe os números do trimestre'] },
+        { speaker: 'Carla Reis', parts: ['Perfeito', 'Perfeito, podemos', 'Perfeito, podemos revisar a meta agora'] },
+      ];
+
+      const container = document.getElementById('captions');
+      const resultEl = document.getElementById('result');
+      const assertEl = document.getElementById('assert');
+
+      // --- Reproduz o wiring do content script (observer + debounce) ---
+      // Dedupe por CONTEÚDO (mri/autor + texto), igual à extensão — nada de
+      // identidade de nó, que a lista virtual do Teams recicla.
+      const store = TranscriptCore.createStore();
+      const commitTimers = new Map();
+      let liveKeys = new Set();
+      const COMMIT_DEBOUNCE_MS = 300; // menor no teste para rodar rápido
+
+      function commitNow(key) {
+        clearTimeout(commitTimers.get(key));
+        commitTimers.delete(key);
+        const entry = TranscriptCore.commitPending(store, key);
+        if (entry) renderFinal(entry);
+      }
+
+      function scan() {
+        const items = DomAdapter.extractCaptionItems(container);
+        const seen = new Set();
+        for (const item of items) {
+          if (!item.text) continue;
+          const key = TranscriptCore.speechKey(item.mri, item.speaker);
+          seen.add(key);
+          const closed = TranscriptCore.observeItem(store, { key, speaker: item.speaker, text: item.text, ts: Date.now() });
+          if (closed) renderFinal(closed);
+          clearTimeout(commitTimers.get(key));
+          commitTimers.set(key, setTimeout(function () { commitNow(key); }, COMMIT_DEBOUNCE_MS));
+        }
+        for (const key of liveKeys) if (!seen.has(key)) commitNow(key);
+        liveKeys = seen;
+      }
+
+      new MutationObserver(scan).observe(container, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+
+      function renderFinal(entry) {
+        const row = document.createElement('div');
+        row.className = 'final';
+        const who = document.createElement('span');
+        who.className = 'who';
+        who.textContent = '[' + TranscriptCore.formatTimestamp(entry.ts) + '] ' + entry.falante + ': ';
+        const txt = document.createElement('span');
+        txt.textContent = entry.texto;
+        row.append(who, txt);
+        resultEl.append(row);
+      }
+
+      // --- Simula o Teams: um bloco por fala, texto crescendo, some no fim ---
+      function makeCaptionNode(speaker) {
+        const node = document.createElement('div');
+        node.setAttribute('data-tid', 'closed-caption-message');
+        const author = document.createElement('span');
+        author.setAttribute('data-tid', 'author');
+        author.textContent = speaker;
+        const text = document.createElement('span');
+        text.setAttribute('data-tid', 'closed-caption-text');
+        node.append(author, text);
+        container.append(node);
+        return text;
+      }
+
+      function playScript(done) {
+        let turn = 0;
+        function nextTurn() {
+          if (turn >= SCRIPT.length) {
+            // Última fala ainda visível: um scan final comita pelo debounce.
+            setTimeout(done, COMMIT_DEBOUNCE_MS + 120);
+            return;
+          }
+          const line = SCRIPT[turn++];
+          const textEl = makeCaptionNode(line.speaker);
+          let part = 0;
+          const timer = setInterval(function () {
+            textEl.textContent = line.parts[part++];
+            if (part >= line.parts.length) {
+              clearInterval(timer);
+              // Deixa o texto final assentar, remove o bloco (fala terminou),
+              // e parte para a próxima — como o Teams faz.
+              setTimeout(function () {
+                textEl.parentElement.remove();
+                nextTurn();
+              }, COMMIT_DEBOUNCE_MS + 80);
+            }
+          }, 90);
+        }
+        nextTurn();
+      }
+
+      function runAssertions() {
+        const entries = TranscriptCore.getEntries(store);
+        const expected = SCRIPT.map(function (s) {
+          return { falante: s.speaker, texto: s.parts[s.parts.length - 1] };
+        });
+
+        const checks = [];
+        checks.push(['3 falas com parciais viram 3 entradas', entries.length === 3]);
+        for (let i = 0; i < expected.length; i++) {
+          const e = entries[i] || {};
+          checks.push([
+            'entrada ' + (i + 1) + ' = ' + expected[i].falante + ' / texto final correto',
+            e.falante === expected[i].falante && e.texto === expected[i].texto,
+          ]);
+        }
+        const allText = entries.map(function (e) { return e.texto; }).join(' | ');
+        checks.push(['nenhum parcial intermediário virou entrada', allText.indexOf('Bom dia a todos, vamos começar?') !== -1 && entries.length === 3]);
+
+        let failed = 0;
+        for (const [label, ok] of checks) {
+          if (!ok) failed++;
+          const line = document.createElement('div');
+          line.innerHTML = '<span class="' + (ok ? 'pass' : 'fail') + '">[' + (ok ? 'PASS' : 'FALHOU') + ']</span> ' + label;
+          assertEl.append(line);
+          console.log((ok ? 'PASS' : 'FALHOU') + ' — ' + label);
+        }
+
+        const summary = document.createElement('div');
+        summary.style.marginTop = '10px';
+        summary.style.fontWeight = '700';
+        summary.innerHTML = failed === 0
+          ? '<span class="pass">TODOS OS TESTES PASSARAM (3 falas, 0 duplicatas)</span>'
+          : '<span class="fail">' + failed + ' teste(s) falharam</span>';
+        assertEl.append(summary);
+      }
+
+      playScript(runAssertions);
+    </script>
+
+    <script>
+      'use strict';
+
+      // Monta o DOM do Teams v2 e verifica a nova cadeia de seletores, usando os
+      // MESMOS dom-adapter.js/transcript-core.js da extensão.
+      (function () {
+        const V2 = [
+          { author: 'ANA SOUZA', text: 'bom dia a todos' },
+          { author: 'BRUNO LIMA', text: 'trouxe os números do trimestre' },
+          { author: 'CARLA REIS', text: 'podemos revisar a meta agora' },
+        ];
+
+        const host = document.getElementById('v2host');
+        const assertEl = document.getElementById('v2assert');
+
+        const wrapper = document.createElement('div');
+        wrapper.setAttribute('data-tid', 'closed-caption-v2-window-wrapper');
+        const listContent = document.createElement('div');
+        listContent.setAttribute('data-tid', 'closed-caption-v2-virtual-list-content');
+        wrapper.append(listContent);
+        for (const line of V2) {
+          const item = document.createElement('div');
+          const author = document.createElement('span');
+          author.setAttribute('data-tid', 'author');
+          author.textContent = line.author;
+          const space = document.createTextNode(' ');
+          const text = document.createElement('span');
+          text.textContent = line.text;
+          item.append(author, space, text);
+          listContent.append(item);
+        }
+        host.append(wrapper);
+
+        const found = DomAdapter.findCaptions(host);
+        const items = found.container ? DomAdapter.extractCaptionItems(found.container) : [];
+
+        const checks = [];
+        checks.push(['findCaptions achou o container v2', !!found.container]);
+        checks.push(['casou por SELETOR (não heurística)', found.mode === 'selector']);
+        checks.push([
+          'container = closed-caption-v2-window-wrapper',
+          !!found.container && found.container.getAttribute('data-tid') === 'closed-caption-v2-window-wrapper',
+        ]);
+        checks.push(['extraiu 3 legendas v2', items.length === 3]);
+        for (let i = 0; i < V2.length; i++) {
+          const it = items[i] || {};
+          checks.push([
+            'legenda ' + (i + 1) + ' = ' + V2[i].author + ' / texto correto',
+            it.speaker === V2[i].author && it.text === V2[i].text,
+          ]);
+        }
+
+        let failed = 0;
+        for (const [label, ok] of checks) {
+          if (!ok) failed++;
+          const line = document.createElement('div');
+          line.innerHTML = '<span class="' + (ok ? 'pass' : 'fail') + '">[' + (ok ? 'PASS' : 'FALHOU') + ']</span> ' + label;
+          assertEl.append(line);
+          console.log('[v2] ' + (ok ? 'PASS' : 'FALHOU') + ' — ' + label);
+        }
+        const summary = document.createElement('div');
+        summary.style.marginTop = '10px';
+        summary.style.fontWeight = '700';
+        summary.innerHTML = failed === 0
+          ? '<span class="pass">CADEIA TEAMS V2 OK (container por seletor + 3 legendas)</span>'
+          : '<span class="fail">' + failed + ' verificação(ões) v2 falharam</span>';
+        assertEl.append(summary);
+      })();
+    </script>
+  </body>
+</html>

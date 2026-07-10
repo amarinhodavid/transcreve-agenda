@@ -1,0 +1,18 @@
+# Dependências (por precaução — o projeto é vanilla, sem npm em runtime)
+node_modules/
+
+# Transcrições e exports gerados localmente
+*.md.export
+teams-transcricao-*.md
+teams-transcricao-*.txt
+teams-transcricao-*.json
+
+# Sistema operacional / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Pacote da extensão
+*.zip
