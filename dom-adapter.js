@@ -198,20 +198,35 @@
     return el && el.getAttribute ? el.getAttribute(MRI_ATTR) || '' : '';
   }
 
+  // Uma palavra é "nome em caixa alta" se tem 2+ letras, TODAS maiúsculas
+  // (permitindo . ' -). "DE", "SILVA", "SOUZA" casam; "bom", "Vamos", "A" não.
+  const UPPERCASE_WORD = /^\p{Lu}[\p{Lu}'.\-]+$/u;
+
   /**
    * Separa "NOME EM MAIÚSCULAS" + fala quando o Teams v2 empacota autor e texto
    * no mesmo nó sem elementos dedicados. Ex.: "ANA SOUZA bom dia a todos" →
-   * { speaker: 'ANA SOUZA', text: 'bom dia a todos' }. Sem prefixo maiúsculo,
-   * devolve o texto inteiro como fala.
+   * { speaker: 'ANA SOUZA', text: 'bom dia a todos' }.
+   *
+   * Consome TODAS as palavras em caixa alta consecutivas do início (até 6 — nome
+   * completo tipo "PATRICIA SILVA DE SOUZA"); a fala começa na 1ª palavra que não
+   * é caixa alta pura. Sem prefixo maiúsculo, o texto inteiro é a fala. Se o texto
+   * é SÓ nome (tudo em caixa alta, sem fala), devolve fala vazia — que o chamador
+   * descarta, como as legendas de sistema.
    */
   function splitUppercaseName(fullText) {
-    const s = String(fullText || '').trim();
-    const match = s.match(/^((?:\p{Lu}[\p{Lu}'.\-]+\s+){1,4})(\p{L}.*)$/u);
-    if (!match) return { speaker: '', text: s };
-    const speaker = match[1].trim();
-    const text = match[2].trim();
-    if (!text) return { speaker: '', text: s };
-    return { speaker, text };
+    const s = String(fullText || '').replace(/\s+/g, ' ').trim();
+    if (!s) return { speaker: '', text: '' };
+    const tokens = s.split(' ');
+    const nameParts = [];
+    let i = 0;
+    while (i < tokens.length && nameParts.length < 6 && UPPERCASE_WORD.test(tokens[i])) {
+      nameParts.push(tokens[i]);
+      i++;
+    }
+    if (!nameParts.length) return { speaker: '', text: s }; // sem nome em caixa alta
+    const text = tokens.slice(i).join(' ').trim();
+    if (!text) return { speaker: '', text: '' }; // só nome, sem fala → descartar
+    return { speaker: nameParts.join(' '), text };
   }
 
   /**

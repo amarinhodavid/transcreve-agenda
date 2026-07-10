@@ -20,9 +20,13 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const VERSION = '0.3.0';
+  const VERSION = '0.3.1';
   const COLLAPSE_WHITESPACE = /\s+/g;
   const MAX_HISTORY = 10;
+  // Janela para colapsar parciais consecutivos do mesmo autor na exportação.
+  const COLLAPSE_WINDOW_MS = 15000;
+  // Nº de chars normalizados iguais no início que já indicam a MESMA fala em revisão.
+  const REVISION_PREFIX_CHARS = 20;
 
   /**
    * Padrões de legenda que o Teams injeta e NÃO são fala de ninguém — ruído a
@@ -45,6 +49,20 @@
   function normalize(text) {
     if (text == null) return '';
     return String(text).replace(COLLAPSE_WHITESPACE, ' ').trim();
+  }
+
+  /**
+   * Normaliza para COMPARAÇÃO de parciais: minúsculas, sem pontuação e espaços
+   * colapsados. O Teams insere vírgula/ponto retroativos ("Alteradas" vira
+   * "Alteradas,") — então a comparação de crescimento tem de ignorar pontuação,
+   * senão cada revisão parece uma fala nova.
+   */
+  function normalizeForCompare(text) {
+    return normalize(text)
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N} ]/gu, '') // tira pontuação, preserva letras acentuadas
+      .replace(COLLAPSE_WHITESPACE, ' ')
+      .trim();
   }
 
   function normalizeSpeaker(name) {
@@ -106,10 +124,11 @@
     return 'name:' + normalizeSpeaker(speaker);
   }
 
-  // Chave de conteúdo (autor + texto final). O "\n" separa sem colidir: o
-  // normalize colapsa quebras de linha, então nunca aparece dentro do texto.
+  // Chave de conteúdo (autor + texto NORMALIZADO p/ comparação). Usa a forma sem
+  // pontuação para que "Bom dia" e "Bom dia," não sejam falas diferentes quando a
+  // lista virtual re-renderiza um item já comitado com pontuação retroativa.
   function contentKey(key, text) {
-    return key + '\n' + normalize(text);
+    return key + '\n' + normalizeForCompare(text);
   }
 
   function commonPrefixLen(a, b) {
@@ -120,16 +139,22 @@
   }
 
   /**
-   * A nova legenda é a MESMA fala em crescimento (ou pequena correção) da pendente?
-   * O Teams reescreve a linha enquanto a pessoa fala: "Oi" → "Oi pessoal" → …
-   * Trata como continuação quando uma é prefixo da outra ou compartilham um
-   * prefixo longo (≥60% do menor) — cobre correção de palavra no meio.
+   * A nova legenda é a MESMA fala em progresso (crescimento OU revisão retroativa)
+   * da pendente? Compara pela forma NORMALIZADA (sem pontuação), tolerante a:
+   *   - crescimento: normalizado(anterior) é prefixo do normalizado(novo);
+   *   - regressão de parcial: novo é prefixo do anterior (re-render mais curto);
+   *   - revisão: os primeiros ~20 chars normalizados batem (o Teams reescreve o
+   *     começo com vírgula/acento sem que seja fala nova).
    */
   function isContinuation(oldText, newText) {
-    if (!oldText || !newText) return true;
-    if (newText.indexOf(oldText) === 0) return true; // cresceu
-    if (oldText.indexOf(newText) === 0) return true; // re-render mais curto
-    return commonPrefixLen(oldText, newText) >= Math.min(oldText.length, newText.length) * 0.6;
+    const a = normalizeForCompare(oldText);
+    const b = normalizeForCompare(newText);
+    if (!a || !b) return true;
+    if (b.indexOf(a) === 0) return true; // novo estende o anterior
+    if (a.indexOf(b) === 0) return true; // novo mais curto, mas início do anterior
+    const shared = commonPrefixLen(a, b);
+    if (shared >= Math.min(REVISION_PREFIX_CHARS, a.length, b.length)) return true;
+    return shared >= Math.min(a.length, b.length) * 0.6;
   }
 
   /**
@@ -200,6 +225,33 @@
     return store.committed.slice();
   }
 
+  /**
+   * Safety net de exportação: colapsa entradas CONSECUTIVAS do mesmo autor onde
+   * uma é prefixo normalizado da outra dentro de uma janela curta (parciais da
+   * mesma escadinha que escaparam e viraram falas separadas). Mantém a versão
+   * mais completa e o timestamp mais antigo. Conserta inclusive sessões gravadas
+   * antes deste fix, na hora de exportar. Puro: recebe/retorna array.
+   */
+  function collapseEntries(entries, windowMs) {
+    const win = typeof windowMs === 'number' ? windowMs : COLLAPSE_WINDOW_MS;
+    const out = [];
+    for (const e of Array.isArray(entries) ? entries : []) {
+      const prev = out[out.length - 1];
+      if (prev && prev.falante === e.falante && Math.abs(e.ts - prev.ts) <= win) {
+        const a = normalizeForCompare(prev.texto);
+        const b = normalizeForCompare(e.texto);
+        if (a && b && (b.indexOf(a) === 0 || a.indexOf(b) === 0)) {
+          // Mesma fala em progresso: fica com a mais completa; ts mais antigo (o
+          // de prev, pois a lista está em ordem cronológica).
+          if (b.length >= a.length) prev.texto = e.texto;
+          continue;
+        }
+      }
+      out.push({ ts: e.ts, falante: e.falante, texto: e.texto });
+    }
+    return out;
+  }
+
   function pad2(value) {
     return value < 10 ? '0' + value : String(value);
   }
@@ -229,7 +281,8 @@
     return null;
   }
 
-  function toPlainText(session, entries) {
+  function toPlainText(session, rawEntries) {
+    const entries = collapseEntries(rawEntries);
     const started = sessionStart(session);
     const header = [
       'Transcrição — ' + sessionTitle(session),
@@ -244,7 +297,8 @@
     return header.concat(body).join('\n') + '\n';
   }
 
-  function toMarkdown(session, entries) {
+  function toMarkdown(session, rawEntries) {
+    const entries = collapseEntries(rawEntries);
     const started = sessionStart(session);
     const out = [
       '# Transcrição — ' + sessionTitle(session),
@@ -263,7 +317,8 @@
     return out.join('\n');
   }
 
-  function toJSON(session, entries) {
+  function toJSON(session, rawEntries) {
+    const entries = collapseEntries(rawEntries);
     const started = sessionStart(session);
     return JSON.stringify({
       app: 'transcreve-agenda',
@@ -296,7 +351,8 @@
    * hora de início/fim + nº de falas; corpo com uma fala por linha. Datas no
    * fuso local do sistema (o chamador passa `new Date()` local).
    */
-  function toMeetingMarkdown(session, entries) {
+  function toMeetingMarkdown(session, rawEntries) {
+    const entries = collapseEntries(rawEntries);
     const started = sessionStart(session);
     const ended = sessionEnd(session);
     const out = [
@@ -358,6 +414,7 @@
     VERSION,
     MAX_HISTORY,
     normalize,
+    normalizeForCompare,
     createStore,
     speechKey,
     observeItem,
@@ -365,6 +422,7 @@
     isContinuation,
     isSystemCaption,
     getEntries,
+    collapseEntries,
     formatTimestamp,
     toPlainText,
     toMarkdown,

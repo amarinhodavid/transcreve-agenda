@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Transcreve Agenda — Transcrição do Teams",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Transcreve reuniões do Microsoft Teams lendo as legendas ao vivo direto do navegador. Tudo local, nada é enviado para servidores externos.",
   "permissions": ["storage", "downloads", "scripting", "activeTab"],
   "host_permissions": [

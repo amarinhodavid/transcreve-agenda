@@ -108,6 +108,56 @@ check('conservador: padrão de sistema COM falante é mantido', T.commitPending(
 check('só a fala real (+ a conservadora) entraram, sistema puro descartado', T.getEntries(s4).length === 2);
 
 // ============================================================================
+// Caso REAL (reunião do usuário, v0.3.0): a escadinha crescia e o Teams inseriu
+// vírgula/ponto RETROATIVOS na última revisão — cada uma virou "fala". Agora a
+// comparação tolerante (sem pontuação) junta tudo em 1 fala.
+console.log('\nCaso real — escadinha com pontuação retroativa\n');
+
+const PARTIALS = [
+  'Alteradas que já possui um curso que ainda não',
+  'Alteradas que já possui um curso que ainda não tem essa se',
+  'Alteradas que já possui um curso que ainda não tem essa segurança',
+  'Alteradas que já possui um curso que ainda não tem essa segurança a gente',
+  'Alteradas, que já possui um curso que ainda não tem essa segurança a gente.',
+];
+const FINAL_TEXT = PARTIALS[PARTIALS.length - 1];
+
+const sReal = T.createStore();
+const oradorKey = T.speechKey('', 'Orador 1'); // sem mri, só o rótulo do Teams
+PARTIALS.forEach(function (text, i) {
+  T.observeItem(sReal, { key: oradorKey, speaker: 'Orador 1', text: text, ts: base + i * 400 });
+});
+T.commitPending(sReal, oradorKey);
+const eReal = T.getEntries(sReal);
+check('5 parciais (com vírgula retroativa) viram 1 entrada', eReal.length === 1);
+check('...texto final = a revisão mais completa (com pontuação)', eReal[0] && eReal[0].texto === FINAL_TEXT);
+check('...timestamp = primeira aparição da fala', eReal[0] && eReal[0].ts === base);
+
+check('isContinuation tolera a vírgula retroativa', T.isContinuation(PARTIALS[3], PARTIALS[4]) === true);
+
+// ============================================================================
+console.log('\nSafety net de exportação — collapseEntries\n');
+
+const rawCommitted = PARTIALS.map(function (text, i) {
+  return { ts: base + i * 400, falante: 'Orador 1', texto: text };
+});
+const collapsed = T.collapseEntries(rawCommitted);
+check('exportação colapsa 5 parciais já comitados em 1', collapsed.length === 1);
+check('...fica com a versão mais completa', collapsed[0].texto === FINAL_TEXT);
+check('...preserva o timestamp mais antigo', collapsed[0].ts === base);
+
+check('collapse NÃO junta falas distintas do mesmo autor',
+  T.collapseEntries([
+    { ts: base, falante: 'Ana', texto: 'bom dia a todos' },
+    { ts: base + 2000, falante: 'Ana', texto: 'vamos ao segundo ponto' },
+  ]).length === 2);
+check('collapse respeita a janela de 15s (prefixo distante não junta)',
+  T.collapseEntries([
+    { ts: base, falante: 'Ana', texto: 'oi' },
+    { ts: base + 20000, falante: 'Ana', texto: 'oi pessoal tudo bem' },
+  ]).length === 2);
+
+// ============================================================================
 console.log('\nNome de arquivo — sanitização Windows\n');
 
 check('remove inválidos do Windows e mantém acentos',
@@ -186,6 +236,15 @@ check('nome de 1 palavra', sp.speaker === 'BRUNO' && sp.text === 'trouxe os núm
 
 sp = D.splitUppercaseName('MARIA DA SILVA COSTA vamos ao ponto');
 check('nome de até 4 palavras', sp.speaker === 'MARIA DA SILVA COSTA' && sp.text === 'vamos ao ponto');
+
+// Caso real: o nome completo NÃO pode ser cortado no meio (bug "PATRICIA SILVA
+// DE" | "SOUZA"). Consome todas as palavras em caixa alta consecutivas.
+sp = D.splitUppercaseName('PATRICIA SILVA DE SOUZA bom dia');
+check('nome completo (4 palavras, "DE" incluso) não corta a última',
+  sp.speaker === 'PATRICIA SILVA DE SOUZA' && sp.text === 'bom dia');
+
+sp = D.splitUppercaseName('PATRICIA SILVA DE SOUZA');
+check('texto só com nome (sem fala) é descartado', sp.speaker === '' && sp.text === '');
 
 sp = D.splitUppercaseName('texto comum sem nome em caixa alta');
 check('sem prefixo maiúsculo mantém a fala inteira', sp.speaker === '' && sp.text === 'texto comum sem nome em caixa alta');

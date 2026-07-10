@@ -34,7 +34,6 @@
   // Dedupe é por CONTEÚDO (mri/autor + texto), nunca por nó: a lista de legendas
   // do Teams v2 é virtualizada e recicla os nós dos itens.
   const commitTimers = new Map(); // chave da fala -> timeout do debounce
-  let liveKeys = new Set(); // falas visíveis no último scan (por chave de autor)
   let committedEntries = []; // espelho em memória do que está no storage
   let observer = null;
   let pollTimer = null;
@@ -152,7 +151,6 @@
   function detach() {
     if (observer) { observer.disconnect(); observer = null; }
     container = null;
-    liveKeys = new Set();
     lastTextSnapshot = '';
     lastMutationAt = 0;
   }
@@ -181,28 +179,31 @@
 
     // Re-query dos itens a partir do wrapper atual a cada scan — nunca guardamos
     // referência a nó de item (a lista virtual os destrói/recicla).
-    const items = DomAdapter.extractCaptionItems(container);
-    const seen = new Set();
-    for (const item of items) {
-      if (!item.text) continue;
-      const key = TranscriptCore.speechKey(item.mri, item.speaker);
-      seen.add(key);
+    const items = DomAdapter.extractCaptionItems(container).filter(function (it) { return it.text; });
+    const keys = items.map(function (it) { return TranscriptCore.speechKey(it.mri, it.speaker); });
+
+    for (let i = 0; i < items.length; i++) {
       const closed = TranscriptCore.observeItem(store, {
-        key,
-        speaker: item.speaker,
-        text: item.text,
+        key: keys[i],
+        speaker: items[i].speaker,
+        text: items[i].text,
         ts: Date.now(),
       });
       // observeItem fecha a fala ANTERIOR do mesmo autor quando uma nova começa.
       if (closed) persistEntry(closed);
-      scheduleCommit(key);
     }
 
-    // Autor que sumiu do DOM = fala encerrada: comita agora.
-    for (const key of liveKeys) {
-      if (!seen.has(key)) commitNow(key);
+    // Regra de posição da lista virtual do Teams v2: o ÚLTIMO item é o único "em
+    // progresso"; qualquer autor cuja última ocorrência NÃO é o último item já
+    // tem legenda mais nova abaixo → está final, comita agora. O último item fica
+    // pendente e é fechado pelo debounce (1,2s sem mudança) ou pelo fim da sessão.
+    const lastIdx = keys.length - 1;
+    const lastOccurrence = new Map();
+    for (let i = 0; i < keys.length; i++) lastOccurrence.set(keys[i], i);
+    for (const [key, idx] of lastOccurrence) {
+      if (idx < lastIdx) commitNow(key);
+      else scheduleCommit(key);
     }
-    liveKeys = seen;
     reportStatus();
   }
 

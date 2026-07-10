@@ -129,7 +129,6 @@
       // identidade de nó, que a lista virtual do Teams recicla.
       const store = TranscriptCore.createStore();
       const commitTimers = new Map();
-      let liveKeys = new Set();
       const COMMIT_DEBOUNCE_MS = 300; // menor no teste para rodar rápido
 
       function commitNow(key) {
@@ -139,20 +138,27 @@
         if (entry) renderFinal(entry);
       }
 
+      function scheduleCommit(key) {
+        clearTimeout(commitTimers.get(key));
+        commitTimers.set(key, setTimeout(function () { commitNow(key); }, COMMIT_DEBOUNCE_MS));
+      }
+
+      // Igual à extensão: observa todos os itens e usa a POSIÇÃO — só o último
+      // item da lista fica em progresso (debounce); os de cima já estão finais.
       function scan() {
-        const items = DomAdapter.extractCaptionItems(container);
-        const seen = new Set();
-        for (const item of items) {
-          if (!item.text) continue;
-          const key = TranscriptCore.speechKey(item.mri, item.speaker);
-          seen.add(key);
-          const closed = TranscriptCore.observeItem(store, { key, speaker: item.speaker, text: item.text, ts: Date.now() });
+        const items = DomAdapter.extractCaptionItems(container).filter(function (it) { return it.text; });
+        const keys = items.map(function (it) { return TranscriptCore.speechKey(it.mri, it.speaker); });
+        for (let i = 0; i < items.length; i++) {
+          const closed = TranscriptCore.observeItem(store, { key: keys[i], speaker: items[i].speaker, text: items[i].text, ts: Date.now() });
           if (closed) renderFinal(closed);
-          clearTimeout(commitTimers.get(key));
-          commitTimers.set(key, setTimeout(function () { commitNow(key); }, COMMIT_DEBOUNCE_MS));
         }
-        for (const key of liveKeys) if (!seen.has(key)) commitNow(key);
-        liveKeys = seen;
+        const lastIdx = keys.length - 1;
+        const lastOccurrence = new Map();
+        for (let i = 0; i < keys.length; i++) lastOccurrence.set(keys[i], i);
+        for (const [key, idx] of lastOccurrence) {
+          if (idx < lastIdx) commitNow(key);
+          else scheduleCommit(key);
+        }
       }
 
       new MutationObserver(scan).observe(container, {
