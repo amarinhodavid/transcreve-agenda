@@ -62,21 +62,27 @@ async function recomputeStatus() {
   setBadge(capturing);
 }
 
-// Abre uma sessão de captura. Se a anterior foi finalizada, começa buffer limpo.
-async function openSession() {
+// Abre uma sessão de captura. Sessão NOVA (nunca aberta, já finalizada, ou
+// meetingId diferente do atual) começa com buffer limpo e título novo. Reabrir a
+// MESMA sessão (mesmo meetingId, não finalizada) preserva título e buffer.
+async function openSession(meetingId) {
   const cur = await chrome.storage.local.get([SESSION_KEY]);
   const s = cur[SESSION_KEY];
-  if (!s || !s.startedAt || s.finalized) {
-    const patch = {
+  const plan = TranscriptCore.planSession(s, meetingId);
+
+  if (plan.isNew) {
+    await chrome.storage.local.set({
       [SESSION_KEY]: {
         startedAt: new Date().toISOString(),
-        title: s && !s.finalized ? s.title || null : null,
+        title: null, // reunião nova → título novo, nunca herda o anterior
+        meetingId: plan.meetingId,
         finalized: false,
       },
-    };
-    // Sessão realmente nova (nunca aberta ou já finalizada) → zera o buffer vivo.
-    if (!s || s.finalized) patch[ENTRIES_KEY] = [];
-    await chrome.storage.local.set(patch);
+      [ENTRIES_KEY]: [], // buffer sempre zerado em sessão nova
+    });
+  } else if (meetingId && s && !s.meetingId) {
+    // Mesma reunião ganhando identidade estável (título/URL surgiram depois).
+    await chrome.storage.local.set({ [SESSION_KEY]: Object.assign({}, s, { meetingId: meetingId }) });
   }
   await chrome.storage.local.set({ [CAPSTATE_KEY]: { capturing: true } });
   setBadge(true);
@@ -129,7 +135,7 @@ async function autoDownload(session, entries) {
 async function clearTranscript() {
   await chrome.storage.local.set({
     [ENTRIES_KEY]: [],
-    [SESSION_KEY]: { startedAt: new Date().toISOString(), title: null, finalized: false },
+    [SESSION_KEY]: { startedAt: new Date().toISOString(), title: null, meetingId: null, finalized: false },
     [STATUS_KEY]: { capturing: false, captionsDetected: false, count: 0, mode: null },
   });
 }
@@ -190,7 +196,7 @@ const HANDLERS = {
   START: async function () { await openSession(); return { ok: true }; },
   STOP: async function () { await finalizeSession(); return { ok: true }; },
   AUTO_START: async function (msg) {
-    await openSession();
+    await openSession(msg && msg.meetingId);
     if (msg && msg.title) await setMeetingTitle(msg.title);
     return { ok: true };
   },
@@ -205,14 +211,29 @@ const HANDLERS = {
   },
 };
 
+// Handlers que mutam a SESSÃO precisam rodar um de cada vez: na troca de reunião
+// o content dispara AUTO_END logo seguido de AUTO_START. Sem serializar, os dois
+// poderiam intercalar e a reunião nova herdaria (ou apagaria) o buffer da anterior
+// antes do arquivamento. A fila garante AUTO_END finalizar ANTES do AUTO_START.
+const SERIALIZED = { START: true, STOP: true, AUTO_START: true, AUTO_END: true, CLEAR: true };
+let opQueue = Promise.resolve();
+
+function serialize(fn) {
+  const run = opQueue.then(fn, fn);
+  opQueue = run.then(function () {}, function () {});
+  return run;
+}
+
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   const handler = msg && msg.type ? HANDLERS[msg.type] : null;
   if (!handler) {
     sendResponse({ ok: false, reason: 'unknown_message' });
     return false;
   }
+  const invoke = function () { return handler(msg, sender); };
+  const result = SERIALIZED[msg.type] ? serialize(invoke) : invoke();
   // A resposta é assíncrona: mantemos o canal aberto retornando true.
-  handler(msg, sender)
+  result
     .then(sendResponse)
     .catch(function (err) {
       console.error('[Transcreve Agenda] falha ao tratar', msg.type, err);

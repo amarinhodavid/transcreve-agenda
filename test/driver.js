@@ -158,6 +158,79 @@ check('collapse respeita a janela de 15s (prefixo distante não junta)',
   ]).length === 2);
 
 // ============================================================================
+// Identidade de reunião: separa reuniões trocadas no MESMO tab (Teams v2 é SPA).
+console.log('\nIdentidade de reunião — parseMeetingThreadId / stableMeetingId\n');
+
+const urlA = 'https://teams.microsoft.com/v2/?meetup-join/19:meeting_ABCdef123@thread.v2/0?context=%7b%7d';
+const urlA2 = 'https://teams.microsoft.com/v2/#/meetup-join/19:meeting_ABCdef123@thread.v2/0?tenantId=x&anon=1';
+const urlB = 'https://teams.microsoft.com/v2/?meetup-join/19:meeting_ZZZ999@thread.v2/0';
+const urlEnc = 'https://teams.microsoft.com/l/meetup-join/19%3Ameeting_ENC777%40thread.v2/0?ctx=1';
+
+check('extrai threadId cru da URL', T.parseMeetingThreadId(urlA) === '19:meeting_ABCdef123');
+check('extrai threadId URL-encoded', T.parseMeetingThreadId(urlEnc) === '19:meeting_ENC777');
+check('mesma reunião, hash/query diferentes → MESMO id', T.stableMeetingId(urlA) === T.stableMeetingId(urlA2));
+check('reuniões diferentes → ids diferentes', T.stableMeetingId(urlA) !== T.stableMeetingId(urlB));
+check('sem threadId cai no título normalizado',
+  T.stableMeetingId('https://teams.microsoft.com/v2/', 'Reunião de Vendas') === 'title:reunião de vendas');
+check('sem threadId e sem título → id vazio', T.stableMeetingId('https://teams.microsoft.com/', '') === '');
+check('título variando em caixa/pontuação → mesmo id',
+  T.stableMeetingId('', 'REUNIÃO de Vendas!') === T.stableMeetingId('', 'reunião de vendas'));
+
+// ============================================================================
+// Transição A → B: simula a sequência do background numa troca de reunião e prova
+// que o buffer de B não herda A, e que A foi arquivada finalizada.
+console.log('\nTroca de reunião — reset de buffer + arquivamento da anterior\n');
+
+check('planSession: id diferente = reunião nova',
+  T.planSession({ startedAt: 't', meetingId: 'tid:A', finalized: false }, 'tid:B').isNew === true);
+check('planSession: mesmo id não reabre como nova',
+  T.planSession({ startedAt: 't', meetingId: 'tid:A', finalized: false }, 'tid:A').isNew === false);
+check('planSession: sessão finalizada = nova',
+  T.planSession({ startedAt: 't', meetingId: 'tid:A', finalized: true }, 'tid:A').isNew === true);
+check('planSession: sem sessão anterior = nova',
+  T.planSession(null, 'tid:A').isNew === true);
+
+(function () {
+  let sessionState = null;
+  let entriesBuf = [];
+  let historyBuf = [];
+
+  function openSim(meetingId, title) {
+    const plan = T.planSession(sessionState, meetingId);
+    if (plan.isNew) {
+      sessionState = { startedAt: 't', title: title || null, meetingId: plan.meetingId, finalized: false };
+      entriesBuf = []; // buffer zerado na sessão nova
+    } else if (meetingId && sessionState && !sessionState.meetingId) {
+      sessionState.meetingId = meetingId;
+    }
+  }
+  function finalizeSim() {
+    if (entriesBuf.length && sessionState && !sessionState.finalized) {
+      historyBuf = T.pushSession(historyBuf, {
+        inicio: 'a', fim: 'b',
+        titulo: sessionState.title || 'Reunião do Teams',
+        falas: entriesBuf.slice(),
+      });
+    }
+    if (sessionState) sessionState.finalized = true;
+  }
+
+  // Reunião A
+  openSim('tid:19:meeting_A', 'Reunião A');
+  entriesBuf.push({ ts: base, falante: 'Ana', texto: 'fala da reunião A' });
+  // Troca detectada: content chama endCapture (AUTO_END) e depois beginCapture (AUTO_START).
+  finalizeSim();
+  openSim('tid:19:meeting_B', 'Reunião B');
+  entriesBuf.push({ ts: base + 1000, falante: 'Bruno', texto: 'fala da reunião B' });
+
+  check('buffer da reunião B NÃO herda falas da A',
+    entriesBuf.length === 1 && entriesBuf[0].texto === 'fala da reunião B');
+  check('reunião A arquivada no histórico, finalizada',
+    historyBuf.length === 1 && historyBuf[0].titulo === 'Reunião A' &&
+    historyBuf[0].falas.length === 1 && historyBuf[0].falas[0].texto === 'fala da reunião A');
+})();
+
+// ============================================================================
 console.log('\nNome de arquivo — sanitização Windows\n');
 
 check('remove inválidos do Windows e mantém acentos',

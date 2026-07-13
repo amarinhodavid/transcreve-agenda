@@ -47,6 +47,7 @@
   let lastStatusJson = '';
   let lastMutationAt = 0; // quando o observer disparou pela última vez (watchdog)
   let lastTextSnapshot = ''; // textContent do wrapper no último tick (watchdog)
+  let currentMeetingId = null; // identidade da reunião em captura (separa reuniões)
 
   function sendToBackground(message) {
     const p = chrome.runtime.sendMessage(message);
@@ -78,8 +79,23 @@
       if (!capturing && (autoMode || manualRequested)) {
         beginCapture(found.container);
       } else if (capturing) {
-        attach(found.container);
-        runWatchdog(found.container);
+        // Teams v2 é SPA: trocar de reunião não recarrega a página. Se o id
+        // estável da reunião mudou, é OUTRA reunião → finaliza a anterior (comita,
+        // arquiva, auto-save, zera buffer) e recomeça limpo. NÃO dependemos mais
+        // do timer de 60s para separar reuniões — só como fim natural.
+        const now = TranscriptCore.stableMeetingId(location.href, meetingTitle());
+        if (now && isStableId(currentMeetingId) && now !== currentMeetingId) {
+          if (typeof console !== 'undefined' && console.warn) {
+            console.warn('[Transcreve Agenda] troca de reunião detectada — finalizando a anterior');
+          }
+          endCapture();
+          beginCapture(found.container, now);
+        } else {
+          // Mesma reunião ganhando identidade estável (título/URL surgiram depois).
+          if (now && !isStableId(currentMeetingId)) currentMeetingId = now;
+          attach(found.container);
+          runWatchdog(found.container);
+        }
       }
     } else {
       if (!warnedMiss) {
@@ -95,12 +111,38 @@
     reportStatus();
   }
 
-  function beginCapture(found) {
+  // Id estável (tid/title) é confiável para comparar reuniões; o fallback ('ts:')
+  // é único por sessão e serve só como identidade quando não há URL/título.
+  function isStableId(id) {
+    return typeof id === 'string' && (id.indexOf('tid:') === 0 || id.indexOf('title:') === 0);
+  }
+
+  function firstVisibleMri() {
+    try {
+      const el = (container || document).querySelector('[data-person-mri]');
+      return el ? el.getAttribute('data-person-mri') || '' : '';
+    } catch (_noQuery) {
+      return '';
+    }
+  }
+
+  // Identidade da reunião no início da captura: threadId/título estável (melhor)
+  // ou, sem nenhum, um id único derivado do 1º person-mri + timestamp desta sessão.
+  function computeMeetingId() {
+    const stable = TranscriptCore.stableMeetingId(location.href, meetingTitle());
+    if (stable) return stable;
+    const mri = firstVisibleMri();
+    return 'ts:' + (mri ? mri + '|' : '') + Date.now();
+  }
+
+  function beginCapture(found, meetingId) {
     capturing = true;
-    // Abre a sessão no background (badge REC + startedAt) já com o título da
-    // reunião, capturado do document.title no momento em que a sessão abre. No
-    // manual isso já veio do START, mas reenviar é idempotente.
-    sendToBackground({ type: 'AUTO_START', title: meetingTitle() });
+    committedEntries = []; // buffer local SEMPRE limpo ao abrir a sessão nova
+    currentMeetingId = meetingId || computeMeetingId();
+    // Abre a sessão no background (badge REC + startedAt) já com título e id da
+    // reunião. O id separa reuniões distintas mesmo se a ordem das mensagens
+    // AUTO_END/AUTO_START variar. No manual o START já abriu; reenviar é idempotente.
+    sendToBackground({ type: 'AUTO_START', title: meetingTitle(), meetingId: currentMeetingId });
     if (found) attach(found);
   }
 
@@ -161,6 +203,7 @@
     detach();
     capturing = false;
     disappearAt = 0;
+    currentMeetingId = null; // próxima captura recomputa a identidade do zero
     sendToBackground({ type: 'AUTO_END' });
     reportStatus();
   }

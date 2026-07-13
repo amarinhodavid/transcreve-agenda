@@ -48,6 +48,12 @@ fecha a aba), a sessão é finalizada, **salva automaticamente em disco** (veja
 abaixo) e vai para o **histórico**. As últimas 10 sessões ficam listadas no
 popup, prontas para exportar depois em `.md`, `.txt` ou `.json`.
 
+Cada reunião vira **um arquivo separado**. Como o Teams web é um app de página
+única (não recarrega ao trocar de reunião), a extensão identifica a reunião pela
+URL (ou pelo título) e detecta a troca: ao entrar na reunião seguinte — mesmo em
+poucos segundos — a anterior é finalizada e salva antes de a nova começar do
+zero. Uma reunião nunca é anexada à outra no mesmo arquivo.
+
 Se preferir o controle manual, desligue o **Modo automático** no popup: voltam os
 botões **Iniciar captura** / **Parar** / **Limpar**.
 

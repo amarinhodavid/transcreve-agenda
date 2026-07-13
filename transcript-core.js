@@ -398,6 +398,51 @@
   }
 
   /**
+   * Extrai o threadId de reunião do Teams v2 da URL. É estável para a MESMA
+   * reunião mesmo com hash/query mudando. Reconhece a forma crua
+   * "19:meeting_...@thread.v2" e a URL-encoded ("19%3ameeting_...%40thread.v2").
+   */
+  function parseMeetingThreadId(url) {
+    const raw = String(url || '');
+    let decoded = raw;
+    try {
+      decoded = decodeURIComponent(raw);
+    } catch (_badEscape) {
+      decoded = raw; // URL malformada: usa a crua
+    }
+    const match = (raw + '\n' + decoded).match(/19:meeting_[A-Za-z0-9_\-]+/i);
+    return match ? match[0] : '';
+  }
+
+  /**
+   * Id ESTÁVEL e determinístico da reunião, para detectar troca de reunião no
+   * MESMO tab (Teams v2 é SPA, não recarrega). Ordem: threadId da URL (melhor) →
+   * título normalizado → '' quando não dá para identificar. Determinístico de
+   * propósito: recomputar durante a mesma reunião devolve sempre o mesmo id
+   * (nunca depende de timestamp), senão toda tick pareceria "reunião nova".
+   */
+  function stableMeetingId(url, title) {
+    const tid = parseMeetingThreadId(url);
+    if (tid) return 'tid:' + tid;
+    const t = normalizeForCompare(title);
+    return t ? 'title:' + t : '';
+  }
+
+  /**
+   * Decide, a partir da sessão anterior e do meetingId novo, se é uma SESSÃO NOVA
+   * (zera buffer) ou reabertura da mesma. É nova quando não há sessão, ela não
+   * começou, já foi finalizada, OU o meetingId difere do da sessão atual. Puro —
+   * o background aplica o efeito em storage. Torna o reset robusto mesmo se a
+   * ordem das mensagens AUTO_END/AUTO_START variar.
+   */
+  function planSession(prevSession, meetingId) {
+    const s = prevSession;
+    const isNew = !s || !s.startedAt || s.finalized ||
+      (!!meetingId && !!s.meetingId && s.meetingId !== meetingId);
+    return { isNew: isNew, meetingId: meetingId || (s && s.meetingId) || null };
+  }
+
+  /**
    * Anexa uma sessão finalizada ao histórico, mantendo só as `maxKept` mais
    * recentes (padrão 10). Puro: recebe/retorna array, não toca em storage nem
    * relógio — o registro já chega pronto de quem chama. Assim é testável no Node.
@@ -431,6 +476,9 @@
     buildFilename,
     sanitizeFilePart,
     buildAutoSaveFilename,
+    parseMeetingThreadId,
+    stableMeetingId,
+    planSession,
     pushSession,
   };
 });
