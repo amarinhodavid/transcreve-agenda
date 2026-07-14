@@ -20,8 +20,6 @@
   const COMMIT_DEBOUNCE_MS = 1200;
   // De quanto em quanto tempo procuramos o container (só surge com legenda ligada).
   const CONTAINER_POLL_MS = 2000;
-  // Container sumido por mais que isso = reunião acabou → finaliza a sessão.
-  const MEETING_GONE_MS = 60000;
   // Observando, o texto do painel mudou mas nenhuma mutation chegou nesse tempo =
   // observer morreu em silêncio (lista virtual reciclou o nó) → força relatch.
   const OBSERVER_STALE_MS = 30000;
@@ -38,16 +36,19 @@
   let observer = null;
   let pollTimer = null;
   let container = null; // wrapper ESTÁVEL das legendas (onde o observer ancora)
-  let capturing = false; // observer ligado e comitando falas
+  let capturing = false; // SESSÃO aberta (pode estar pausada — a call segue ativa)
   let autoMode = true; // captura sozinho ao detectar legenda
   let manualRequested = false; // usuário clicou Iniciar (modo manual)
   let detectionMode = 'selector'; // 'selector' | 'heuristic'
-  let disappearAt = 0; // quando o container sumiu (para o corte de 60s)
   let warnedMiss = false;
   let lastStatusJson = '';
   let lastMutationAt = 0; // quando o observer disparou pela última vez (watchdog)
   let lastTextSnapshot = ''; // textContent do wrapper no último tick (watchdog)
-  let currentMeetingId = null; // identidade da reunião em captura (separa reuniões)
+  let currentThreadId = ''; // threadId da reunião em captura ('' se começou sem)
+  let switchConfirm = { candidate: '', count: 0 }; // gate de confirmação da troca
+  let captionsGoneAt = 0; // quando o painel de legendas sumiu (0 = presente)
+  let callGoneAt = 0; // quando a UI de call sumiu depois de vista (0 = na call/indef)
+  let sawCallUi = false; // já vimos a UI de call nesta sessão (confia no "false" depois)
 
   function sendToBackground(message) {
     const p = chrome.runtime.sendMessage(message);
@@ -70,51 +71,68 @@
   }
 
   function tick() {
+    const now = Date.now();
     const found = DomAdapter.findCaptions(document);
+    const hasCaptions = !!found.container;
 
-    if (found.container) {
-      disappearAt = 0;
+    if (hasCaptions) {
       detectionMode = found.mode || 'selector';
+      captionsGoneAt = 0;
       warnedMiss = false;
-      if (!capturing && (autoMode || manualRequested)) {
-        beginCapture(found.container);
-      } else if (capturing) {
-        // Teams v2 é SPA: trocar de reunião não recarrega a página. Se o id
-        // estável da reunião mudou, é OUTRA reunião → finaliza a anterior (comita,
-        // arquiva, auto-save, zera buffer) e recomeça limpo. NÃO dependemos mais
-        // do timer de 60s para separar reuniões — só como fim natural.
-        const now = TranscriptCore.stableMeetingId(location.href, meetingTitle());
-        if (now && isStableId(currentMeetingId) && now !== currentMeetingId) {
-          if (typeof console !== 'undefined' && console.warn) {
-            console.warn('[Transcreve Agenda] troca de reunião detectada — finalizando a anterior');
-          }
-          endCapture();
-          beginCapture(found.container, now);
-        } else {
-          // Mesma reunião ganhando identidade estável (título/URL surgiram depois).
-          if (now && !isStableId(currentMeetingId)) currentMeetingId = now;
-          attach(found.container);
-          runWatchdog(found.container);
-        }
-      }
     } else {
-      if (!warnedMiss) {
-        DomAdapter.warnSelectorsMiss();
-        warnedMiss = true;
-      }
+      if (!warnedMiss) { DomAdapter.warnSelectorsMiss(); warnedMiss = true; }
+      if (!captionsGoneAt) captionsGoneAt = now;
+    }
+
+    // Estado da CALL (não do painel de legendas): true = UI de call presente;
+    // false = já vista e agora sumida (saiu da reunião); null = nunca vista neste
+    // tenant (indeterminado → fallback seguro por ausência de legenda).
+    const callNow = DomAdapter.isInCall(document);
+    if (callNow) { sawCallUi = true; callGoneAt = 0; }
+    else if (sawCallUi && !callGoneAt) callGoneAt = now;
+    const inCall = callNow ? true : (sawCallUi ? false : null);
+
+    // Troca de reunião (só threadId decide, com confirmação) — só enquanto há sessão.
+    let threadSwitch = false;
+    if (capturing) {
+      const observed = TranscriptCore.parseMeetingThreadId(location.href);
+      const decision = TranscriptCore.decideMeetingSwitch(currentThreadId, observed, switchConfirm);
+      switchConfirm = decision.confirmState;
+      if (decision.action === 'adopt') currentThreadId = decision.currentThreadId;
+      if (decision.action === 'switch') threadSwitch = true;
+    }
+
+    const action = TranscriptCore.decideSessionLifecycle({
+      sessionOpen: capturing,
+      inCall: inCall,
+      hasCaptions: hasCaptions,
+      sinceCaptionsGoneMs: captionsGoneAt ? now - captionsGoneAt : 0,
+      sinceCallGoneMs: callGoneAt ? now - callGoneAt : 0,
+      threadSwitch: threadSwitch,
+    });
+
+    if (action === 'capture') {
       if (capturing) {
-        detach();
-        if (!disappearAt) disappearAt = Date.now();
-        else if (Date.now() - disappearAt > MEETING_GONE_MS) endCapture();
+        attach(found.container);
+        runWatchdog(found.container);
+      } else if (autoMode || manualRequested) {
+        beginCapture(found.container);
+      }
+    } else if (action === 'pause') {
+      // Sem legenda mas ainda na call: PAUSA (comita pendentes e destaca o observer)
+      // sem finalizar nem salvar. A mesma sessão retoma quando a legenda voltar.
+      pauseCapture();
+    } else if (action === 'finalize') {
+      if (capturing) {
+        if (threadSwitch && typeof console !== 'undefined' && console.warn) {
+          console.warn('[Transcreve Agenda] troca de reunião confirmada (threadId) — finalizando a anterior');
+        }
+        endCapture();
+        // Troca de reunião: abre a nova imediatamente (buffer limpo).
+        if (threadSwitch && hasCaptions && (autoMode || manualRequested)) beginCapture(found.container);
       }
     }
     reportStatus();
-  }
-
-  // Id estável (tid/title) é confiável para comparar reuniões; o fallback ('ts:')
-  // é único por sessão e serve só como identidade quando não há URL/título.
-  function isStableId(id) {
-    return typeof id === 'string' && (id.indexOf('tid:') === 0 || id.indexOf('title:') === 0);
   }
 
   function firstVisibleMri() {
@@ -126,23 +144,29 @@
     }
   }
 
-  // Identidade da reunião no início da captura: threadId/título estável (melhor)
-  // ou, sem nenhum, um id único derivado do 1º person-mri + timestamp desta sessão.
-  function computeMeetingId() {
-    const stable = TranscriptCore.stableMeetingId(location.href, meetingTitle());
-    if (stable) return stable;
+  // Id da reunião enviado ao background como IDENTIDADE de sessão (separa reuniões
+  // no reset de buffer). É o threadId quando há; senão um id sintético CONGELADO
+  // (1º person-mri + timestamp), computado UMA vez aqui e nunca recomputado de
+  // título no meio da captura.
+  function meetingIdFor(threadId) {
+    if (threadId) return 'tid:' + threadId;
     const mri = firstVisibleMri();
     return 'ts:' + (mri ? mri + '|' : '') + Date.now();
   }
 
-  function beginCapture(found, meetingId) {
+  function beginCapture(found) {
     capturing = true;
     committedEntries = []; // buffer local SEMPRE limpo ao abrir a sessão nova
-    currentMeetingId = meetingId || computeMeetingId();
-    // Abre a sessão no background (badge REC + startedAt) já com título e id da
-    // reunião. O id separa reuniões distintas mesmo se a ordem das mensagens
-    // AUTO_END/AUTO_START variar. No manual o START já abriu; reenviar é idempotente.
-    sendToBackground({ type: 'AUTO_START', title: meetingTitle(), meetingId: currentMeetingId });
+    currentThreadId = TranscriptCore.parseMeetingThreadId(location.href);
+    switchConfirm = { candidate: '', count: 0 };
+    // Nova sessão re-aprende a UI de call e reinicia os relógios de ausência.
+    sawCallUi = false;
+    callGoneAt = 0;
+    captionsGoneAt = 0;
+    // Abre a sessão no background (badge REC + startedAt) com título (só nome de
+    // arquivo) e o meetingId de identidade. O id separa reuniões distintas mesmo se
+    // AUTO_END/AUTO_START intercalarem. No manual o START já abriu; reenviar é idempotente.
+    sendToBackground({ type: 'AUTO_START', title: meetingTitle(), meetingId: meetingIdFor(currentThreadId) });
     if (found) attach(found);
   }
 
@@ -197,13 +221,26 @@
     lastMutationAt = 0;
   }
 
+  // PAUSA a captura sem finalizar a sessão: comita as falas pendentes (não perde a
+  // última) e destaca o observer. A sessão, o buffer e o meetingId ficam de pé —
+  // quando a legenda voltar na MESMA call, attach() retoma tudo. Não fala com o
+  // background (nada de AUTO_END), então não salva.
+  function pauseCapture() {
+    if (!observer && !container) return; // já pausado
+    for (const key of Array.from(commitTimers.keys())) commitNow(key);
+    detach();
+  }
+
   function endCapture() {
     // Finaliza qualquer fala pendente para não perder a última frase dita.
     for (const key of Array.from(commitTimers.keys())) commitNow(key);
     detach();
     capturing = false;
-    disappearAt = 0;
-    currentMeetingId = null; // próxima captura recomputa a identidade do zero
+    currentThreadId = ''; // próxima captura recomputa a identidade do zero
+    switchConfirm = { candidate: '', count: 0 };
+    captionsGoneAt = 0;
+    callGoneAt = 0;
+    sawCallUi = false;
     sendToBackground({ type: 'AUTO_END' });
     reportStatus();
   }
@@ -314,6 +351,11 @@
         (cls.length ? cls.slice(0, 40).join(', ') : 'nenhuma'));
       lines.push('  container provável (modo ' + (d.mode || 'nenhum') + '): ' +
         (d.sampleEl ? 'ENCONTRADO' : 'não encontrado'));
+      lines.push('  [call UI — isInCall=' + (d.inCall ? 'SIM' : 'não') + ']');
+      for (const item of d.callUi || []) {
+        const flag = item.count < 0 ? '(inválido)  ' : '';
+        lines.push('    ' + flag + item.count + '  ' + item.sel);
+      }
       if (d.sampleEl) {
         lines.push('  --- AMOSTRA outerHTML (até 3000 chars) ---');
         lines.push(truncate(d.sampleEl.outerHTML));

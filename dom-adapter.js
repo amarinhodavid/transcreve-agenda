@@ -77,6 +77,46 @@
   // É a melhor chave de atribuição de falante — sobrevive à reciclagem de nós.
   const MRI_ATTR = 'data-person-mri';
 
+  // Sinais de que estamos numa REUNIÃO AO VIVO (call ativa). O ciclo de vida da
+  // sessão se amarra a ISTO, não ao painel de legendas (que some sozinho no meio
+  // da reunião). Cadeia de fallback como a das legendas — do específico ao amplo.
+  const CALL_UI = [
+    // Botão de sair/desligar da chamada.
+    '[data-tid="hangup-main-btn"]',
+    '[data-tid="hangup-button"]',
+    '[data-tid="call-hangup"]',
+    // Barra/controles de chamada.
+    '[data-tid="calling-toolbar"]',
+    '[data-tid="call-controls"]',
+    '[id="call-controls"]',
+    // Palco/stage da reunião.
+    '[data-tid="calling-stage"]',
+    '[data-tid="meetup-stage"]',
+    // Roster (lista de participantes).
+    '[data-tid="roster-button"]',
+    // Genéricos (fallback para variação de tenant).
+    '[data-tid*="hangup" i]',
+    '[data-tid*="call-controls" i]',
+  ];
+
+  /**
+   * Estamos numa reunião ao vivo? true se qualquer sinal de UI de call casar.
+   * Snapshot booleano — o content script trata a ausência como "fora da call" (se
+   * já viu a UI antes) ou "indeterminado" (se nunca viu neste tenant).
+   */
+  function isInCall(doc) {
+    const target = doc || (typeof document !== 'undefined' ? document : null);
+    if (!target || typeof target.querySelector !== 'function') return false;
+    for (const sel of CALL_UI) {
+      try {
+        if (target.querySelector(sel)) return true;
+      } catch (_selectorNotSupported) {
+        // seletor não suportado neste engine: tenta o próximo
+      }
+    }
+    return false;
+  }
+
   // querySelector com fallback: percorre a lista e devolve o 1º que casar.
   // O catch existe porque um seletor pode ser inválido em algum engine —
   // nesse caso a resposta correta é cair pro próximo, não abortar.
@@ -325,6 +365,14 @@
       // idem
     }
 
+    const callUi = CALL_UI.map(function (sel) {
+      try {
+        return { sel: sel, count: doc.querySelectorAll(sel).length };
+      } catch (_selectorNotSupported) {
+        return { sel: sel, count: -1 };
+      }
+    });
+
     const found = findCaptions(doc);
     return {
       selectorCounts: selectorCounts,
@@ -332,6 +380,8 @@
       classes: classes,
       mode: found.mode,
       sampleEl: found.container,
+      callUi: callUi,
+      inCall: isInCall(doc),
     };
   }
 
@@ -357,6 +407,7 @@
     findCaptionsContainer,
     extractCaptionItems,
     personMri,
+    isInCall,
     splitUppercaseName,
     diagnoseDocument,
     warnSelectorsMiss,

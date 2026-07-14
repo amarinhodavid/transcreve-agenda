@@ -177,6 +177,158 @@ check('título variando em caixa/pontuação → mesmo id',
   T.stableMeetingId('', 'REUNIÃO de Vendas!') === T.stableMeetingId('', 'reunião de vendas'));
 
 // ============================================================================
+// Detecção de troca: SÓ threadId decide, com gate de confirmação (N ticks). O
+// título é volátil no meio da reunião e NÃO pode disparar troca/auto-save.
+console.log('\nDetecção de troca — decideMeetingSwitch (só threadId + confirmação)\n');
+
+const TID_A = '19:meeting_A';
+const TID_B = '19:meeting_B';
+const NO_CONFIRM = { candidate: '', count: 0 };
+
+// Reproduz o BUG: mesma reunião (threadId estável), rodando vários ticks. Nunca troca.
+(function () {
+  let cur = TID_A;
+  let cs = NO_CONFIRM;
+  let switches = 0;
+  for (let t = 0; t < 10; t++) {
+    const d = T.decideMeetingSwitch(cur, TID_A, cs); // threadId sempre igual
+    cs = d.confirmState;
+    if (d.action === 'switch') switches++;
+    if (d.action === 'adopt') cur = d.currentThreadId;
+  }
+  check('mesma reunião, título mudando a cada tick → 0 trocas', switches === 0);
+})();
+
+// threadId presente → ausente → presente (mesmo id): 0 trocas.
+(function () {
+  let cur = TID_A;
+  let cs = NO_CONFIRM;
+  let switches = 0;
+  const seq = [TID_A, '', '', TID_A, '', TID_A];
+  for (const obs of seq) {
+    const d = T.decideMeetingSwitch(cur, obs, cs);
+    cs = d.confirmState;
+    if (d.action === 'switch') switches++;
+    if (d.action === 'adopt') cur = d.currentThreadId;
+  }
+  check('threadId some e volta (mesmo id) → 0 trocas', switches === 0);
+})();
+
+// Começou sintético ('' de threadId) e depois surge um threadId → adota, 0 trocas.
+(function () {
+  const d = T.decideMeetingSwitch('', TID_A, NO_CONFIRM);
+  check('começou sem thread e surgiu um → adota (não troca)',
+    d.action === 'adopt' && d.currentThreadId === TID_A);
+})();
+
+// threadId genuinamente diferente PERSISTINDO 2 ticks → 1 troca (após confirmação).
+(function () {
+  let cur = TID_A;
+  let cs = NO_CONFIRM;
+  const results = [];
+  // 1º tick com o novo id: ainda não troca (aguarda confirmação)
+  let d = T.decideMeetingSwitch(cur, TID_B, cs); cs = d.confirmState; results.push(d.action);
+  // 2º tick consecutivo com o mesmo novo id: confirma e troca
+  d = T.decideMeetingSwitch(cur, TID_B, cs); cs = d.confirmState; results.push(d.action);
+  if (d.action === 'switch') cur = d.currentThreadId;
+  check('1º tick com id novo NÃO troca (aguarda confirmação)', results[0] === 'none');
+  check('2º tick consecutivo com o mesmo id novo → troca', results[1] === 'switch' && cur === TID_B);
+})();
+
+// Um único tick com id diferente, depois volta ao original → 0 trocas.
+(function () {
+  let cur = TID_A;
+  let cs = NO_CONFIRM;
+  let switches = 0;
+  let d = T.decideMeetingSwitch(cur, TID_B, cs); cs = d.confirmState; if (d.action === 'switch') switches++;
+  d = T.decideMeetingSwitch(cur, TID_A, cs); cs = d.confirmState; if (d.action === 'switch') switches++; // voltou
+  d = T.decideMeetingSwitch(cur, TID_B, cs); cs = d.confirmState; if (d.action === 'switch') switches++; // de novo, mas contador zerou
+  check('id diferente transitório (volta ao original) → 0 trocas', switches === 0);
+})();
+
+// ============================================================================
+// Ciclo de vida da sessão amarrado à CALL (não ao painel de legendas). O painel
+// some sozinho no meio da reunião — não pode finalizar/salvar por causa disso.
+console.log('\nCiclo de vida — decideSessionLifecycle (sessão presa à call)\n');
+
+// REPRODUÇÃO DO BUG: na call, painel de legendas some por 90s → PAUSA, não finaliza.
+check('inCall=true + sem legenda 90s → pause (NÃO finaliza/salva)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: true, hasCaptions: false, sinceCaptionsGoneMs: 90000, sinceCallGoneMs: 0, threadSwitch: false }) === 'pause');
+check('inCall=true + legenda presente → capture',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: true, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, threadSwitch: false }) === 'capture');
+check('inCall=false por 30s → finalize (reunião acabou)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: false, hasCaptions: false, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 30000, threadSwitch: false }) === 'finalize');
+check('inCall=false ainda no grace (10s) → pause, não finaliza',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: false, hasCaptions: false, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 10000, threadSwitch: false }) === 'pause');
+
+// Detector indeterminado (tenant desconhecido): fallback por ausência de legenda
+// com grace grande — silêncio de 90s pausa; 6min finaliza.
+check('inCall=null + sem legenda 90s → pause (grace 5min)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: null, hasCaptions: false, sinceCaptionsGoneMs: 90000, sinceCallGoneMs: 0, threadSwitch: false }) === 'pause');
+check('inCall=null + sem legenda 6min → finalize (fallback)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: null, hasCaptions: false, sinceCaptionsGoneMs: 360000, sinceCallGoneMs: 0, threadSwitch: false }) === 'finalize');
+check('inCall=null + legenda presente → capture',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: null, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, threadSwitch: false }) === 'capture');
+
+check('troca de reunião confirmada → finalize (mesmo na call)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: true, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, threadSwitch: true }) === 'finalize');
+
+check('sem sessão + sem legenda → idle',
+  T.decideSessionLifecycle({ sessionOpen: false, inCall: null, hasCaptions: false }) === 'idle');
+check('sem sessão + legenda presente → capture (vai iniciar)',
+  T.decideSessionLifecycle({ sessionOpen: false, inCall: true, hasCaptions: true }) === 'capture');
+
+// ============================================================================
+console.log('\nGuarda anti-lixo do auto-save — shouldAutoSave\n');
+
+check('1 fala / 5s → NÃO salva (arquivo de lixo)',
+  T.shouldAutoSave([{ ts: base, falante: 'Ana', texto: 'oi' }],
+    new Date(base).toISOString(), new Date(base + 5000).toISOString()) === false);
+check('3 falas / 60s → salva',
+  T.shouldAutoSave([
+    { ts: base, falante: 'Ana', texto: 'a' },
+    { ts: base + 1000, falante: 'Bruno', texto: 'b' },
+    { ts: base + 2000, falante: 'Ana', texto: 'c' },
+  ], new Date(base).toISOString(), new Date(base + 60000).toISOString()) === true);
+check('3 falas mas só 5s de duração → NÃO salva',
+  T.shouldAutoSave([
+    { ts: base, falante: 'Ana', texto: 'a' },
+    { ts: base + 1000, falante: 'Bruno', texto: 'b' },
+    { ts: base + 2000, falante: 'Ana', texto: 'c' },
+  ], new Date(base).toISOString(), new Date(base + 5000).toISOString()) === false);
+check('sem timestamps de sessão: usa intervalo das falas (2 falas/20s) → salva',
+  T.shouldAutoSave([
+    { ts: base, falante: 'Ana', texto: 'a' },
+    { ts: base + 20000, falante: 'Bruno', texto: 'b' },
+  ], null, null) === true);
+check('0 falas → NÃO salva', T.shouldAutoSave([], new Date(base).toISOString(), new Date(base + 60000).toISOString()) === false);
+
+// ============================================================================
+console.log('\nDetector de call — isInCall (dom-adapter)\n');
+
+function fakeDoc(html) {
+  // mini-doc: só o querySelector que o isInCall usa, via um matcher simples de data-tid.
+  return {
+    querySelector: function (sel) {
+      const m = sel.match(/data-tid\*?=?"?([^"\]]+)"?/);
+      const needle = m ? m[1].replace(/"$/, '') : '';
+      // suporta [data-tid="x"] e [data-tid*="y" i]
+      const wildcard = sel.indexOf('*=') !== -1;
+      const tids = html; // array de data-tid presentes
+      for (const t of tids) {
+        if (wildcard ? t.toLowerCase().indexOf(needle.toLowerCase()) !== -1 : t === needle) return {};
+      }
+      return null;
+    },
+  };
+}
+
+check('isInCall: com botão de hangup → true', D.isInCall(fakeDoc(['hangup-main-btn'])) === true);
+check('isInCall: com calling-stage → true', D.isInCall(fakeDoc(['calling-stage'])) === true);
+check('isInCall: DOM sem UI de call → false', D.isInCall(fakeDoc(['some-other-thing'])) === false);
+check('isInCall: doc sem querySelector → false (defensivo)', D.isInCall({}) === false);
+
+// ============================================================================
 // Transição A → B: simula a sequência do background numa troca de reunião e prova
 // que o buffer de B não herda A, e que A foi arquivada finalizada.
 console.log('\nTroca de reunião — reset de buffer + arquivamento da anterior\n');

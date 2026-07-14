@@ -114,8 +114,10 @@ async function finalizeSession() {
   setBadge(false);
 
   // Salvamento automático em disco: só na primeira finalização, com o toggle
-  // ligado (padrão) e ao menos 1 fala — nunca gera arquivo vazio nem duplicado.
-  if (wasOpen && entries.length && data[AUTOSAVE_KEY] !== false) {
+  // ligado (padrão) e passando a guarda anti-lixo (mínimo de falas + duração) —
+  // nunca gera arquivo vazio, minúsculo nem duplicado.
+  if (wasOpen && data[AUTOSAVE_KEY] !== false &&
+      TranscriptCore.shouldAutoSave(entries, session.startedAt, endedAt)) {
     await autoDownload(finalized, entries);
   }
 }

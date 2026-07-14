@@ -43,25 +43,32 @@ O popup vira um visor — mostra o status, o contador de falas, a transcrição 
 vivo e os botões de exportar. O ícone da extensão ganha um selo **REC** enquanto
 está capturando, então dá para saber que está gravando sem abrir o popup.
 
-Quando a reunião acaba (o painel de legendas some por mais de 60 segundos ou você
-fecha a aba), a sessão é finalizada, **salva automaticamente em disco** (veja
-abaixo) e vai para o **histórico**. As últimas 10 sessões ficam listadas no
-popup, prontas para exportar depois em `.md`, `.txt` ou `.json`.
+A sessão fica atrelada à **reunião (call) estar ativa**, não ao painel de
+legendas. Numa reunião ao vivo o painel some sozinho o tempo todo (silêncio,
+interação com a tela, reciclagem interna do Teams) — quando isso acontece a
+captura só **pausa** e retoma quando a legenda volta, sem finalizar nada. A
+sessão só é finalizada, **salva automaticamente em disco** (veja abaixo) e vai
+para o **histórico** quando a reunião realmente acaba (você sai da call e ela
+some por ~25 s), quando você troca de reunião, fecha a aba ou clica em **Parar**.
+As últimas 10 sessões ficam listadas no popup, prontas para exportar depois em
+`.md`, `.txt` ou `.json`.
 
 Cada reunião vira **um arquivo separado**. Como o Teams web é um app de página
-única (não recarrega ao trocar de reunião), a extensão identifica a reunião pela
-URL (ou pelo título) e detecta a troca: ao entrar na reunião seguinte — mesmo em
-poucos segundos — a anterior é finalizada e salva antes de a nova começar do
-zero. Uma reunião nunca é anexada à outra no mesmo arquivo.
+única (não recarrega ao trocar de reunião), a extensão identifica cada reunião
+pelo **id de thread na URL** (`19:meeting_…`) — e só por ele: o título da aba é
+volátil no meio da reunião (falante ativo, contador de chat) e por isso nunca
+decide troca. Quando o id de thread muda e **persiste** por alguns segundos, a
+reunião anterior é finalizada e salva antes de a nova começar do zero. Uma
+reunião nunca é anexada à outra, e o arquivo nunca baixa no meio da conversa.
 
 Se preferir o controle manual, desligue o **Modo automático** no popup: voltam os
 botões **Iniciar captura** / **Parar** / **Limpar**.
 
 ## Salvamento automático ao fim da reunião
 
-Assim que a sessão é finalizada — o painel de legendas some por mais de 60
-segundos, você fecha a aba ou clica em **Parar** — a transcrição é gravada
-sozinha em disco, sem nenhum diálogo. O arquivo cai em:
+Assim que a sessão é finalizada — a reunião acaba (você sai da call), você troca
+de reunião, fecha a aba ou clica em **Parar** — a transcrição é gravada sozinha
+em disco, sem nenhum diálogo. O arquivo cai em:
 
 ```
 Downloads\Transcricoes Teams\AAAA-MM-DD-HHMM-<titulo-da-reuniao>.md
@@ -75,7 +82,8 @@ sufixo numérico para não sobrescrever.
 
 O `.md` traz um cabeçalho com título, data, hora de início e fim e número de
 falas, seguido de uma fala por linha no formato `**[HH:MM:SS] Falante:** texto`.
-Sessões sem nenhuma fala não geram arquivo.
+Sessões minúsculas (menos de 2 falas ou menos de ~15 segundos) não geram
+arquivo — nada de arquivos de poucos bytes.
 
 O toggle **Salvar automaticamente ao fim da reunião** no popup liga/desliga esse
 comportamento (vem **ligado** por padrão e a escolha fica salva). Mesmo com ele

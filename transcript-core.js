@@ -27,6 +27,17 @@
   const COLLAPSE_WINDOW_MS = 15000;
   // Nº de chars normalizados iguais no início que já indicam a MESMA fala em revisão.
   const REVISION_PREFIX_CHARS = 20;
+  // Ticks consecutivos com um threadId novo antes de confirmar a troca de reunião
+  // (a ~2s por tick, ~4s). Evita falsa troca por estado transitório da URL.
+  const SWITCH_CONFIRM_TICKS = 2;
+  // Fora da call (detector confiável) por esse tempo = reunião acabou → finaliza.
+  const CALL_GONE_GRACE_MS = 25000;
+  // Detector de call indeterminado (tenant desconhecido): só finaliza por AUSÊNCIA
+  // de legenda depois deste grace bem maior — silêncio normal não finaliza.
+  const CAPTIONS_GONE_FALLBACK_MS = 300000;
+  // Guarda anti-lixo do auto-save: nada de arquivo para sessão minúscula.
+  const MIN_AUTOSAVE_ENTRIES = 2;
+  const MIN_AUTOSAVE_DURATION_MS = 15000;
 
   /**
    * Padrões de legenda que o Teams injeta e NÃO são fala de ninguém — ruído a
@@ -415,17 +426,102 @@
   }
 
   /**
-   * Id ESTÁVEL e determinístico da reunião, para detectar troca de reunião no
-   * MESMO tab (Teams v2 é SPA, não recarrega). Ordem: threadId da URL (melhor) →
-   * título normalizado → '' quando não dá para identificar. Determinístico de
-   * propósito: recomputar durante a mesma reunião devolve sempre o mesmo id
-   * (nunca depende de timestamp), senão toda tick pareceria "reunião nova".
+   * Id da reunião para IDENTIDADE de sessão no background (não para detectar
+   * troca). Ordem: threadId da URL → título normalizado → ''. Determinístico.
+   * ATENÇÃO: NÃO usar para detectar troca de reunião — o título (document.title)
+   * é volátil no meio da reunião (falante ativo, contador de chat, "(3)"…) e
+   * oscilaria. A detecção de troca usa SÓ o threadId (decideMeetingSwitch).
    */
   function stableMeetingId(url, title) {
     const tid = parseMeetingThreadId(url);
     if (tid) return 'tid:' + tid;
     const t = normalizeForCompare(title);
     return t ? 'title:' + t : '';
+  }
+
+  /**
+   * Máquina de decisão de troca de reunião — SÓ threadId decide. Recebe o threadId
+   * da captura atual (`current`, '' se começou sem thread), o threadId observado
+   * agora na URL (`observed`, '' se a URL não tem thread neste instante) e o estado
+   * de confirmação `{ candidate, count }`. Retorna { action, currentThreadId,
+   * confirmState }:
+   *   - action 'none'  → nada muda (mantém a reunião corrente);
+   *   - action 'adopt' → começou sem thread e um surgiu: é a MESMA reunião,
+   *                      adota o threadId sem trocar nem salvar;
+   *   - action 'switch'→ threadId genuinamente diferente PERSISTIU N ticks: é outra
+   *                      reunião, finaliza a anterior e começa a nova.
+   *
+   * URL sem thread agora NUNCA troca (é só o SPA sem o id na URL, não é fim). Um
+   * único tick com id diferente seguido de volta ao original NÃO troca (o contador
+   * zera quando o observado volta a bater com o atual).
+   */
+  function decideMeetingSwitch(current, observed, confirmState) {
+    const cur = String(current || '');
+    const obs = String(observed || '');
+    const reset = { candidate: '', count: 0 };
+
+    if (!obs) return { action: 'none', currentThreadId: cur, confirmState: reset };
+    if (obs === cur) return { action: 'none', currentThreadId: cur, confirmState: reset };
+    if (!cur) return { action: 'adopt', currentThreadId: obs, confirmState: reset };
+
+    // threadId diferente e não-vazio: candidato a troca; confirma por N ticks.
+    const prev = confirmState && confirmState.candidate === obs ? confirmState.count : 0;
+    const count = prev + 1;
+    if (count >= SWITCH_CONFIRM_TICKS) {
+      return { action: 'switch', currentThreadId: obs, confirmState: reset };
+    }
+    return { action: 'none', currentThreadId: cur, confirmState: { candidate: obs, count: count } };
+  }
+
+  /**
+   * Ciclo de vida da sessão amarrado à CALL (não ao painel de legendas). O painel
+   * some sozinho numa reunião ao vivo (silêncio, interação, reciclagem) — se o fim
+   * dependesse dele, a sessão finalizaria e salvaria no meio da reunião. Aqui o
+   * fim depende da reunião estar ativa.
+   *
+   * `x`: { sessionOpen, inCall, hasCaptions, sinceCaptionsGoneMs, sinceCallGoneMs, threadSwitch }
+   *   - inCall: true (UI de call presente) | false (estava e saiu) | null (indeterminado).
+   * Retorna 'capture' | 'pause' | 'finalize' | 'idle'.
+   *   - capture : há legenda → observa e comita.
+   *   - pause   : sem legenda mas ainda na call → destaca o observer, NÃO finaliza.
+   *   - finalize: reunião acabou (fora da call além do grace), troca de reunião, ou
+   *               fallback de legenda ausente por muito tempo (detector indeterminado).
+   *   - idle    : sem sessão e sem legenda — nada a fazer.
+   */
+  function decideSessionLifecycle(x) {
+    const hasCaptions = !!(x && x.hasCaptions);
+    if (!x || !x.sessionOpen) return hasCaptions ? 'capture' : 'idle';
+
+    if (x.threadSwitch) return 'finalize';
+
+    if (x.inCall === false) {
+      if ((x.sinceCallGoneMs || 0) >= CALL_GONE_GRACE_MS) return 'finalize';
+      return hasCaptions ? 'capture' : 'pause';
+    }
+    if (x.inCall === true) {
+      return hasCaptions ? 'capture' : 'pause';
+    }
+    // inCall indeterminado (null): fallback seguro por ausência de legenda.
+    if (hasCaptions) return 'capture';
+    if ((x.sinceCaptionsGoneMs || 0) >= CAPTIONS_GONE_FALLBACK_MS) return 'finalize';
+    return 'pause';
+  }
+
+  /**
+   * Guarda anti-lixo do auto-save: só gera arquivo com pelo menos MIN_AUTOSAVE_ENTRIES
+   * falas E duração mínima. Elimina os arquivos de poucos bytes/segundos mesmo se
+   * algo escapar. Duração vem de startedAt/endedAt; sem eles, do intervalo das falas.
+   */
+  function shouldAutoSave(entries, startedAt, endedAt) {
+    const list = Array.isArray(entries) ? entries : [];
+    if (list.length < MIN_AUTOSAVE_ENTRIES) return false;
+    let durMs = NaN;
+    const s = startedAt ? new Date(startedAt).getTime() : NaN;
+    const e = endedAt ? new Date(endedAt).getTime() : NaN;
+    if (!Number.isNaN(s) && !Number.isNaN(e)) durMs = e - s;
+    else durMs = list[list.length - 1].ts - list[0].ts;
+    if (!Number.isNaN(durMs) && durMs < MIN_AUTOSAVE_DURATION_MS) return false;
+    return true;
   }
 
   /**
@@ -478,6 +574,9 @@
     buildAutoSaveFilename,
     parseMeetingThreadId,
     stableMeetingId,
+    decideMeetingSwitch,
+    decideSessionLifecycle,
+    shouldAutoSave,
     planSession,
     pushSession,
   };
