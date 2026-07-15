@@ -75,3 +75,23 @@ foreach ($padrao in $extensoes) {
         }
     }
 }
+
+# Regenera o index.html do visualizador. Só roda se o Node existir no PATH;
+# a falta de Node não pode quebrar o sync (que é a função crítica).
+$gerador = Join-Path $PSScriptRoot 'gerar-index.js'
+$node = Get-Command node -ErrorAction SilentlyContinue
+if (-not $node) {
+    Write-SyncLog 'INDEX: node não encontrado no PATH, geração pulada.'
+}
+elseif (-not (Test-Path -LiteralPath $gerador)) {
+    Write-SyncLog 'INDEX: gerar-index.js ausente, geração pulada.'
+}
+else {
+    try {
+        $saida = & $node.Source $gerador 2>&1
+        Write-SyncLog ("INDEX: {0}" -f ($saida -join ' '))
+    }
+    catch {
+        Write-SyncLog ("INDEX: falha ao gerar index.html: {0}" -f $_.Exception.Message)
+    }
+}
