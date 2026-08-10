@@ -20,3 +20,6 @@ desktop.ini
 # Dados privados de reunião e logs do sync — nunca versionar
 transcricoes/
 scripts/*.log
+
+# Config local de máquina (caminhos de OneDrive/rede) — não pertence ao repo
+scripts/espelhos.local.txt

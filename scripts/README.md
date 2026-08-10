@@ -21,6 +21,32 @@ Regras:
   é truncado mantendo as últimas ~200 linhas.
 - É idempotente e sem janela — pode rodar quantas vezes quiser.
 
+Depois de mover os arquivos e regenerar o `index.html`, o script **espelha** a
+pasta de transcrições nos destinos configurados (veja abaixo).
+
+## Espelhar em outra pasta (OneDrive, rede, pen drive)
+
+Para acessar as transcrições de outra máquina, crie o arquivo
+`espelhos.local.txt` nesta pasta com **um caminho absoluto por linha**:
+
+```
+# Um destino por linha; linhas com # são comentário.
+C:\Users\<voce>\OneDrive - <Empresa>\<Pasta>\AGENDAS
+```
+
+Como funciona:
+
+- Cópia **incremental**: transfere só o que falta ou mudou (compara tamanho e
+  data), então a primeira execução faz o backfill do histórico inteiro sozinha e
+  as seguintes são baratas.
+- **Nunca apaga** nada no espelho — é cópia de segurança, não sincronização
+  bidirecional. Arquivo removido da pasta local continua lá.
+- O `index.html` do visualizador vai junto, então o espelho é navegável.
+- Espelho indisponível (OneDrive offline, rede caída) é registrado no log e não
+  interrompe o sync — a função crítica é mover os arquivos.
+- O arquivo **não vai para o git**: caminho de OneDrive é específico da máquina e
+  do usuário. Sem ele, o script só não espelha; o resto funciona igual.
+
 ## Instalar a tarefa agendada
 
 ```powershell
@@ -67,5 +93,8 @@ estão.
 ```powershell
 Get-ScheduledTask     -TaskName TranscricoesTeamsSync   # estado (Ready/Running)
 Get-ScheduledTaskInfo -TaskName TranscricoesTeamsSync   # LastRunTime, LastTaskResult (0 = ok)
-Get-Content .\sync-transcricoes.log -Tail 20            # últimos arquivos movidos
+Get-Content .\sync-transcricoes.log -Tail 20            # últimos arquivos movidos e espelhados
 ```
+
+Linhas `ESPELHO ...: N copiado(s), M erro(s)` mostram o resultado de cada destino
+configurado; `ESPELHO ERRO ...` detalha o arquivo que falhou.

@@ -2,7 +2,9 @@
 <#
     Sincronizador de transcrições do Teams.
     Move os arquivos que a extensão Chrome baixa em
-    Downloads\Transcricoes Teams para a pasta do projeto.
+    Downloads\Transcricoes Teams para a pasta do projeto e, em seguida,
+    espelha a pasta para os destinos extras configurados (ex.: OneDrive),
+    para acessar as transcrições de outra máquina.
     Compatível com Windows PowerShell 5.1 e PowerShell 7.
 #>
 [CmdletBinding()]
@@ -15,6 +17,21 @@ $origem  = Join-Path $env:USERPROFILE 'Downloads\Transcricoes Teams'
 # então funciona em qualquer máquina sem editar caminho.
 $destino = Join-Path (Split-Path -Parent $PSScriptRoot) 'transcricoes'
 $logFile = Join-Path $PSScriptRoot 'sync-transcricoes.log'
+
+# Espelhos: pastas que recebem uma CÓPIA de tudo que está em transcricoes/ (ex.:
+# OneDrive corporativo, pra abrir a transcrição de outro computador). Um caminho
+# absoluto por linha em scripts/espelhos.local.txt; linhas com # são comentário.
+# O arquivo fica FORA do git de propósito — caminho de OneDrive é específico da
+# máquina e do usuário, não pertence a um repositório público.
+$espelhosConfig = Join-Path $PSScriptRoot 'espelhos.local.txt'
+$espelhos = @()
+if (Test-Path -LiteralPath $espelhosConfig) {
+    $espelhos = @(
+        Get-Content -LiteralPath $espelhosConfig -Encoding UTF8 |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith('#') }
+    )
+}
 
 # Idade mínima: arquivo recém-criado pode ainda estar sendo gravado pelo Chrome.
 $idadeMinimaSegundos = 10
@@ -53,6 +70,45 @@ function Resolve-DestinoLivre {
         if (-not (Test-Path -LiteralPath $candidato)) { return $candidato }
         $i++
     }
+}
+
+# Espelha transcricoes/ em uma pasta extra. Cópia incremental: só transfere o que
+# falta ou mudou (compara tamanho e data), então a primeira execução faz o backfill
+# do histórico inteiro sozinha e as seguintes ficam baratas. Nunca apaga nada no
+# espelho — arquivo removido aqui continua lá, de propósito.
+function Sync-Espelho {
+    param([string]$Espelho)
+
+    if (-not (Test-Path -LiteralPath $Espelho)) {
+        try {
+            New-Item -ItemType Directory -Path $Espelho -Force | Out-Null
+        }
+        catch {
+            Write-SyncLog ("ESPELHO: pasta indisponível {0}: {1}" -f $Espelho, $_.Exception.Message)
+            return
+        }
+    }
+
+    $copiados = 0
+    $erros = 0
+    foreach ($arq in Get-ChildItem -LiteralPath $destino -File -ErrorAction SilentlyContinue) {
+        $alvo = Join-Path $Espelho $arq.Name
+        if (Test-Path -LiteralPath $alvo) {
+            $atual = Get-Item -LiteralPath $alvo
+            # Mesmo tamanho e cópia não mais antiga que a origem = já espelhado.
+            if ($atual.Length -eq $arq.Length -and $atual.LastWriteTime -ge $arq.LastWriteTime) { continue }
+        }
+        try {
+            Copy-Item -LiteralPath $arq.FullName -Destination $alvo -Force
+            $copiados++
+        }
+        catch {
+            # OneDrive offline, arquivo travado ou sem espaço: registra e segue.
+            $erros++
+            Write-SyncLog ("ESPELHO ERRO {0} -> {1}: {2}" -f $arq.Name, $Espelho, $_.Exception.Message)
+        }
+    }
+    Write-SyncLog ("ESPELHO {0}: {1} copiado(s), {2} erro(s)" -f $Espelho, $copiados, $erros)
 }
 
 Invoke-LogRotation
@@ -96,4 +152,13 @@ else {
     catch {
         Write-SyncLog ("INDEX: falha ao gerar index.html: {0}" -f $_.Exception.Message)
     }
+}
+
+# Espelho por último: roda depois do index.html regenerado, então o visualizador
+# também vai junto e o espelho fica navegável fora desta máquina.
+if ($espelhos.Count -eq 0) {
+    Write-SyncLog 'ESPELHO: nenhum configurado (scripts/espelhos.local.txt ausente ou vazio).'
+}
+else {
+    foreach ($espelho in $espelhos) { Sync-Espelho -Espelho $espelho }
 }
