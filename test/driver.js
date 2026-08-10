@@ -270,6 +270,23 @@ check('inCall=null + sem legenda 6min → finalize (fallback)',
 check('inCall=null + legenda presente → capture',
   T.decideSessionLifecycle({ sessionOpen: true, inCall: null, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, threadSwitch: false }) === 'capture');
 
+// REPRODUÇÃO DO BUG 07/08: painel de legendas fica aberto entre duas reuniões, a
+// URL não muda de threadId e a UI de call não é reconhecida → sessão única viva por
+// horas, colando reuniões distintas no mesmo arquivo. O corte por silêncio resolve.
+check('painel aberto + 13min sem fala + call indeterminada → finalize (corta entre reuniões)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: null, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 780000, threadSwitch: false }) === 'finalize');
+check('painel aberto + 2h sem fala → finalize (gap longo entre reuniões)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: null, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 7200000, threadSwitch: false }) === 'finalize');
+check('painel aberto + 5min sem fala → capture (pausa normal de reunião, NÃO corta)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: null, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 300000, threadSwitch: false }) === 'capture');
+// Na call CONFIRMADA o teto é maior: silêncio longo em reunião ao vivo é legítimo.
+check('inCall=true + 13min sem fala → capture (não corta reunião ao vivo)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: true, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 780000, threadSwitch: false }) === 'capture');
+check('inCall=true + 20min sem fala → finalize (mesmo na call, acabou)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: true, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 1200000, threadSwitch: false }) === 'finalize');
+check('sinceLastSpeechMs ausente → não corta (compatível com chamadas antigas)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: true, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, threadSwitch: false }) === 'capture');
+
 check('troca de reunião confirmada → finalize (mesmo na call)',
   T.decideSessionLifecycle({ sessionOpen: true, inCall: true, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, threadSwitch: true }) === 'finalize');
 

@@ -20,7 +20,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const VERSION = '0.3.1';
+  const VERSION = '0.3.5';
   const COLLAPSE_WHITESPACE = /\s+/g;
   const MAX_HISTORY = 10;
   // Janela para colapsar parciais consecutivos do mesmo autor na exportação.
@@ -35,6 +35,15 @@
   // Detector de call indeterminado (tenant desconhecido): só finaliza por AUSÊNCIA
   // de legenda depois deste grace bem maior — silêncio normal não finaliza.
   const CAPTIONS_GONE_FALLBACK_MS = 300000;
+  // Silêncio (nenhuma fala NOVA) que encerra a sessão mesmo com painel de legendas
+  // presente. É o que separa duas reuniões consecutivas quando o Teams mantém o
+  // painel aberto entre elas e a URL não muda de threadId (caso do painel aberto
+  // dentro de uma janela de Chat). Dois patamares:
+  //  - call CONFIRMADA na UI: teto alto, silêncio longo em reunião ao vivo existe;
+  //  - call não confirmada (indeterminada/encerrada): teto menor, pois aí o painel
+  //    parado é quase sempre resíduo entre reuniões, não reunião em curso.
+  const SPEECH_IDLE_IN_CALL_MS = 900000; // 15 min
+  const SPEECH_IDLE_MS = 480000; // 8 min
   // Guarda anti-lixo do auto-save: nada de arquivo para sessão minúscula.
   const MIN_AUTOSAVE_ENTRIES = 2;
   const MIN_AUTOSAVE_DURATION_MS = 15000;
@@ -479,12 +488,16 @@
    * dependesse dele, a sessão finalizaria e salvaria no meio da reunião. Aqui o
    * fim depende da reunião estar ativa.
    *
-   * `x`: { sessionOpen, inCall, hasCaptions, sinceCaptionsGoneMs, sinceCallGoneMs, threadSwitch }
+   * `x`: { sessionOpen, inCall, hasCaptions, sinceCaptionsGoneMs, sinceCallGoneMs,
+   *        sinceLastSpeechMs, threadSwitch }
    *   - inCall: true (UI de call presente) | false (estava e saiu) | null (indeterminado).
+   *   - sinceLastSpeechMs: há quanto tempo nenhuma fala NOVA é comitada (o relógio
+   *     zera no início da sessão e a cada fala) — separa reuniões consecutivas.
    * Retorna 'capture' | 'pause' | 'finalize' | 'idle'.
    *   - capture : há legenda → observa e comita.
    *   - pause   : sem legenda mas ainda na call → destaca o observer, NÃO finaliza.
-   *   - finalize: reunião acabou (fora da call além do grace), troca de reunião, ou
+   *   - finalize: reunião acabou (fora da call além do grace), troca de reunião,
+   *               silêncio prolongado (fim de fato da reunião com painel aberto), ou
    *               fallback de legenda ausente por muito tempo (detector indeterminado).
    *   - idle    : sem sessão e sem legenda — nada a fazer.
    */
@@ -493,6 +506,12 @@
     if (!x || !x.sessionOpen) return hasCaptions ? 'capture' : 'idle';
 
     if (x.threadSwitch) return 'finalize';
+
+    // Silêncio prolongado encerra a sessão INDEPENDENTE de painel e de threadId.
+    // Sem isso, painel de legendas que fica aberto entre duas reuniões mantém uma
+    // única sessão viva por horas e cola reuniões distintas no mesmo arquivo.
+    const idleLimit = x.inCall === true ? SPEECH_IDLE_IN_CALL_MS : SPEECH_IDLE_MS;
+    if ((x.sinceLastSpeechMs || 0) >= idleLimit) return 'finalize';
 
     if (x.inCall === false) {
       if ((x.sinceCallGoneMs || 0) >= CALL_GONE_GRACE_MS) return 'finalize';

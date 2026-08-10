@@ -49,6 +49,7 @@
   let captionsGoneAt = 0; // quando o painel de legendas sumiu (0 = presente)
   let callGoneAt = 0; // quando a UI de call sumiu depois de vista (0 = na call/indef)
   let sawCallUi = false; // já vimos a UI de call nesta sessão (confia no "false" depois)
+  let lastSpeechAt = 0; // última fala COMITADA (0 = sem sessão); base do corte por silêncio
 
   function sendToBackground(message) {
     const p = chrome.runtime.sendMessage(message);
@@ -108,8 +109,10 @@
       hasCaptions: hasCaptions,
       sinceCaptionsGoneMs: captionsGoneAt ? now - captionsGoneAt : 0,
       sinceCallGoneMs: callGoneAt ? now - callGoneAt : 0,
+      sinceLastSpeechMs: capturing && lastSpeechAt ? now - lastSpeechAt : 0,
       threadSwitch: threadSwitch,
     });
+
 
     if (action === 'capture') {
       if (capturing) {
@@ -124,12 +127,18 @@
       pauseCapture();
     } else if (action === 'finalize') {
       if (capturing) {
-        if (threadSwitch && typeof console !== 'undefined' && console.warn) {
-          console.warn('[Transcreve Agenda] troca de reunião confirmada (threadId) — finalizando a anterior');
+        if (typeof console !== 'undefined' && console.warn) {
+          if (threadSwitch) {
+            console.warn('[Transcreve Agenda] troca de reunião confirmada (threadId) — finalizando a anterior');
+          } else if (hasCaptions) {
+            console.warn('[Transcreve Agenda] silêncio prolongado com painel aberto — finalizando a reunião anterior');
+          }
         }
         endCapture();
-        // Troca de reunião: abre a nova imediatamente (buffer limpo).
-        if (threadSwitch && hasCaptions && (autoMode || manualRequested)) beginCapture(found.container);
+        // Troca de reunião OU corte por silêncio com o painel ainda aberto: a
+        // próxima reunião começa em sessão nova (buffer, título e identidade
+        // recomputados) em vez de colar no arquivo da anterior.
+        if (hasCaptions && (autoMode || manualRequested)) beginCapture(found.container);
       }
     }
     reportStatus();
@@ -163,6 +172,7 @@
     sawCallUi = false;
     callGoneAt = 0;
     captionsGoneAt = 0;
+    lastSpeechAt = Date.now(); // relógio do corte por silêncio conta da abertura
     // Abre a sessão no background (badge REC + startedAt) com título (só nome de
     // arquivo) e o meetingId de identidade. O id separa reuniões distintas mesmo se
     // AUTO_END/AUTO_START intercalarem. No manual o START já abriu; reenviar é idempotente.
@@ -241,11 +251,13 @@
     captionsGoneAt = 0;
     callGoneAt = 0;
     sawCallUi = false;
+    lastSpeechAt = 0;
     sendToBackground({ type: 'AUTO_END' });
     reportStatus();
   }
 
   function persistEntry(entry) {
+    lastSpeechAt = Date.now(); // fala nova = reunião viva; zera o relógio do silêncio
     committedEntries.push(entry);
     chrome.storage.local.set({ [ENTRIES_KEY]: committedEntries });
   }
