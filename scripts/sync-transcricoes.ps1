@@ -11,7 +11,9 @@ param()
 $ErrorActionPreference = 'Stop'
 
 $origem  = Join-Path $env:USERPROFILE 'Downloads\Transcricoes Teams'
-$destino = 'C:\Users\amari\Documents\A FUNDO - LOCAL\CLAUDE CODE\PROJETOS\TRANSCREVE AGENDA\transcricoes'
+# Destino = pasta transcricoes do próprio repositório (o script vive em scripts/),
+# então funciona em qualquer máquina sem editar caminho.
+$destino = Join-Path (Split-Path -Parent $PSScriptRoot) 'transcricoes'
 $logFile = Join-Path $PSScriptRoot 'sync-transcricoes.log'
 
 # Idade mínima: arquivo recém-criado pode ainda estar sendo gravado pelo Chrome.
