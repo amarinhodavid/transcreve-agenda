@@ -296,6 +296,185 @@ check('sem sessão + legenda presente → capture (vai iniciar)',
   T.decideSessionLifecycle({ sessionOpen: false, inCall: true, hasCaptions: true }) === 'capture');
 
 // ============================================================================
+// REPRODUÇÃO DO BUG DAS REUNIÕES COLADAS: reuniões seguidas na agenda, painel de
+// legendas aberto o tempo todo, threadId que não muda e UI de call não reconhecida.
+// O corte por silêncio (8/15 min) NÃO alcança um intervalo de 3 minutos entre elas
+// — o título é o sinal que separa em segundos.
+console.log('\nFronteira entre reuniões — título como sinal secundário\n');
+
+check('título com sufixo do app → chave limpa',
+  T.normalizeMeetingTitle('Reunião de Status | Microsoft Teams') === 'reunião de status');
+check('contador de não-lidas não muda a chave',
+  T.normalizeMeetingTitle('(3) Reunião de Status | Microsoft Teams') ===
+  T.normalizeMeetingTitle('Reunião de Status | Microsoft Teams'));
+check('tela genérica do app → chave vazia (nunca dispara troca)',
+  T.normalizeMeetingTitle('Microsoft Teams') === '' &&
+  T.normalizeMeetingTitle('Chat | Microsoft Teams') === '' &&
+  T.normalizeMeetingTitle('') === '');
+
+const NO_TITLE_CONFIRM = { candidate: '', count: 0 };
+
+// Título aparece pela primeira vez: adota, não troca.
+(function () {
+  const d = T.decideTitleSwitch('', 'reunião a', NO_TITLE_CONFIRM);
+  check('primeiro título visto → adota (não troca)',
+    d.action === 'adopt' && d.currentTitle === 'reunião a');
+})();
+
+// Sufixo dinâmico (falante ativo) NÃO é troca — é o falso positivo que motivou
+// banir o título da detecção antes desta correção.
+(function () {
+  let cur = 'reunião a';
+  let cs = NO_TITLE_CONFIRM;
+  let switches = 0;
+  const seq = ['reunião a falando ana', 'reunião a', 'reunião a falando bruno', 'reunião a'];
+  for (const obs of seq) {
+    const d = T.decideTitleSwitch(cur, obs, cs);
+    cs = d.confirmState;
+    if (d.action === 'switch') switches++;
+  }
+  check('título ganhando/perdendo sufixo dinâmico → 0 trocas', switches === 0);
+})();
+
+// Título genuinamente outro precisa de 3 ticks consecutivos.
+(function () {
+  let cs = NO_TITLE_CONFIRM;
+  const acts = [];
+  for (let i = 0; i < 3; i++) {
+    const d = T.decideTitleSwitch('reunião a', 'reunião b', cs);
+    cs = d.confirmState;
+    acts.push(d.action);
+  }
+  check('título novo: 2 primeiros ticks não trocam',
+    acts[0] === 'none' && acts[1] === 'none');
+  check('título novo: 3º tick consecutivo confirma a troca', acts[2] === 'switch');
+})();
+
+// Piscada de título (volta ao original) NÃO troca.
+(function () {
+  let cs = NO_TITLE_CONFIRM;
+  let switches = 0;
+  const seq = ['reunião b', 'reunião a', 'reunião b', 'reunião a'];
+  for (const obs of seq) {
+    const d = T.decideTitleSwitch('reunião a', obs, cs);
+    cs = d.confirmState;
+    if (d.action === 'switch') switches++;
+  }
+  check('título piscando e voltando ao original → 0 trocas', switches === 0);
+})();
+
+check('título vazio (tela genérica) nunca troca',
+  T.decideTitleSwitch('reunião a', '', NO_TITLE_CONFIRM).action === 'none');
+
+// ============================================================================
+console.log('\nFronteira entre reuniões — perda do threadId na URL\n');
+
+// URL perde o threadId que tinha: suspeita de saída, confirmada por 8 ticks.
+(function () {
+  let cs = NO_CONFIRM;
+  const acts = [];
+  for (let i = 0; i < 8; i++) {
+    const d = T.decideMeetingSwitch(TID_A, '', cs);
+    cs = d.confirmState;
+    acts.push(d.action);
+  }
+  check('URL sem threadId: 7 primeiros ticks ainda não sinalizam',
+    acts.slice(0, 7).every(function (a) { return a === 'none'; }));
+  check('URL sem threadId por 8 ticks → lost', acts[7] === 'lost');
+})();
+
+// threadId volta antes do grace: zera a suspeita.
+(function () {
+  let cs = NO_CONFIRM;
+  for (let i = 0; i < 5; i++) cs = T.decideMeetingSwitch(TID_A, '', cs).confirmState;
+  cs = T.decideMeetingSwitch(TID_A, TID_A, cs).confirmState; // voltou
+  const acts = [];
+  for (let i = 0; i < 5; i++) {
+    const d = T.decideMeetingSwitch(TID_A, '', cs);
+    cs = d.confirmState;
+    acts.push(d.action);
+  }
+  check('threadId reaparecendo zera a suspeita de saída',
+    acts.every(function (a) { return a === 'none'; }));
+})();
+
+check('nunca houve threadId → sem suspeita de perda',
+  T.decideMeetingSwitch('', '', NO_CONFIRM).action === 'none');
+
+// ============================================================================
+console.log('\nCiclo de vida com os sinais novos\n');
+
+check('titleSwitch → finalize mesmo na call e com painel aberto',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: true, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 0, titleSwitch: true }) === 'finalize');
+check('threadLost NA CALL → não finaliza (SPA só navegou para o chat)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: true, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 0, threadLost: true }) === 'capture');
+check('threadLost com call indeterminada → finalize',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: null, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 0, threadLost: true }) === 'finalize');
+check('threadLost fora da call → finalize',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: false, hasCaptions: false, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 0, threadLost: true }) === 'finalize');
+
+// CENÁRIO COMPLETO: reunião das 10h termina, 3 min de gap, reunião das 11h começa.
+// Painel de legendas aberto o tempo todo, mesmo threadId, call não reconhecida.
+// Antes da correção: uma sessão só, as duas reuniões no mesmo arquivo.
+(function () {
+  const TICK_MS = 2000;
+  let titleKey = 'reuniao das 10h';
+  let titleCs = NO_TITLE_CONFIRM;
+  let sinceSpeech = 0;
+  let finalizou = false;
+  let ticksAteCortar = 0;
+
+  // 3 min de gap entre as reuniões, depois o Teams troca o título para a próxima.
+  const GAP_TICKS = 90; // 90 × 2s = 3 min
+  for (let i = 0; i < GAP_TICKS + 10 && !finalizou; i++) {
+    const obsTitle = i < GAP_TICKS ? 'reuniao das 10h' : 'reuniao das 11h';
+    const d = T.decideTitleSwitch(titleKey, obsTitle, titleCs);
+    titleCs = d.confirmState;
+    if (d.action === 'adopt') titleKey = d.currentTitle;
+    sinceSpeech += TICK_MS;
+    const action = T.decideSessionLifecycle({
+      sessionOpen: true,
+      inCall: null, // UI de call não reconhecida neste tenant
+      hasCaptions: true, // painel segue aberto entre as reuniões
+      sinceCaptionsGoneMs: 0,
+      sinceCallGoneMs: 0,
+      sinceLastSpeechMs: sinceSpeech,
+      threadSwitch: false, // mesmo threadId o tempo todo
+      titleSwitch: d.action === 'switch',
+      threadLost: false,
+    });
+    ticksAteCortar++;
+    if (action === 'finalize') finalizou = true;
+  }
+  check('reuniões coladas (gap de 3 min, painel aberto, mesmo threadId) → CORTA',
+    finalizou === true);
+  // Corta 3 ticks depois da troca de título, não pelo silêncio (que exigiria 8 min).
+  check('corta pelo título em ~6s após a troca, não esperando o silêncio',
+    ticksAteCortar === GAP_TICKS + 3);
+})();
+
+// CONTROLE: a mesma reunião, longa e silenciosa, NÃO pode ser cortada pelo título.
+(function () {
+  let titleKey = 'reuniao unica';
+  let titleCs = NO_TITLE_CONFIRM;
+  let cortes = 0;
+  const seq = ['reuniao unica', 'reuniao unica falando ana', 'reuniao unica',
+    '', 'reuniao unica', 'reuniao unica falando bruno', 'reuniao unica'];
+  for (const obs of seq) {
+    const d = T.decideTitleSwitch(titleKey, obs, titleCs);
+    titleCs = d.confirmState;
+    if (d.action === 'adopt') titleKey = d.currentTitle;
+    const action = T.decideSessionLifecycle({
+      sessionOpen: true, inCall: true, hasCaptions: true,
+      sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 240000,
+      threadSwitch: false, titleSwitch: d.action === 'switch', threadLost: false,
+    });
+    if (action === 'finalize') cortes++;
+  }
+  check('reunião única com título oscilando e 4 min de silêncio → 0 cortes', cortes === 0);
+})();
+
+// ============================================================================
 console.log('\nGuarda anti-lixo do auto-save — shouldAutoSave\n');
 
 check('1 fala / 5s → NÃO salva (arquivo de lixo)',

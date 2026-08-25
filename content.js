@@ -24,9 +24,16 @@
   // observer morreu em silêncio (lista virtual reciclou o nó) → força relatch.
   const OBSERVER_STALE_MS = 30000;
 
+  // De quanto em quanto tempo, no máximo, carimbamos "vi a UI de call" no storage.
+  const CALL_MARK_THROTTLE_MS = 10000;
+
   const ENTRIES_KEY = 'entries';
   const CAPSTATE_KEY = 'capState';
   const AUTOMODE_KEY = 'autoMode';
+  // Carimbo compartilhado entre TODOS os frames: quando algum deles viu a UI de
+  // call pela última vez. O frame que renderiza as legendas quase nunca é o mesmo
+  // que tem o botão de desligar, então sem esse canal ele jamais enxergaria a call.
+  const CALLSEEN_KEY = 'callSeenAt';
 
   const store = TranscriptCore.createStore();
   // Dedupe é por CONTEÚDO (mri/autor + texto), nunca por nó: a lista de legendas
@@ -45,7 +52,11 @@
   let lastMutationAt = 0; // quando o observer disparou pela última vez (watchdog)
   let lastTextSnapshot = ''; // textContent do wrapper no último tick (watchdog)
   let currentThreadId = ''; // threadId da reunião em captura ('' se começou sem)
-  let switchConfirm = { candidate: '', count: 0 }; // gate de confirmação da troca
+  let switchConfirm = { candidate: '', count: 0, lost: 0 }; // gate de confirmação da troca
+  let currentTitleKey = ''; // título normalizado da reunião em captura
+  let titleConfirm = { candidate: '', count: 0 }; // gate de confirmação da troca por título
+  let callSeenAt = 0; // carimbo compartilhado: algum frame viu a UI de call
+  let lastCallMark = 0; // último carimbo QUE ESTE frame escreveu (throttle)
   let captionsGoneAt = 0; // quando o painel de legendas sumiu (0 = presente)
   let callGoneAt = 0; // quando a UI de call sumiu depois de vista (0 = na call/indef)
   let sawCallUi = false; // já vimos a UI de call nesta sessão (confia no "false" depois)
@@ -58,11 +69,21 @@
   }
 
   async function init() {
-    const data = await chrome.storage.local.get([ENTRIES_KEY, CAPSTATE_KEY, AUTOMODE_KEY]);
+    const data = await chrome.storage.local.get([ENTRIES_KEY, CAPSTATE_KEY, AUTOMODE_KEY, CALLSEEN_KEY]);
     committedEntries = Array.isArray(data[ENTRIES_KEY]) ? data[ENTRIES_KEY] : [];
     autoMode = data[AUTOMODE_KEY] !== false; // padrão ON
     manualRequested = !!(data[CAPSTATE_KEY] && data[CAPSTATE_KEY].capturing);
+    callSeenAt = typeof data[CALLSEEN_KEY] === 'number' ? data[CALLSEEN_KEY] : 0;
     startEngine();
+  }
+
+  // Carimba "vi a UI de call agora" para os outros frames. Com throttle porque o
+  // tick roda a cada 2s e isso aqui não precisa dessa resolução.
+  function markCallSeen(now) {
+    callSeenAt = now;
+    if (now - lastCallMark < CALL_MARK_THROTTLE_MS) return;
+    lastCallMark = now;
+    chrome.storage.local.set({ [CALLSEEN_KEY]: now });
   }
 
   // Um único laço serve aos dois modos: procura o container e decide o que fazer.
@@ -88,19 +109,40 @@
     // Estado da CALL (não do painel de legendas): true = UI de call presente;
     // false = já vista e agora sumida (saiu da reunião); null = nunca vista neste
     // tenant (indeterminado → fallback seguro por ausência de legenda).
-    const callNow = DomAdapter.isInCall(document);
+    //
+    // A leitura é AGREGADA entre os frames: a UI de call mora no frame de topo e as
+    // legendas costumam vir de outro. Cada frame carimba o que vê em storage e aqui
+    // aceitamos o carimbo mais recente de qualquer um enquanto ele estiver fresco.
+    // O carimbo dura CALL_FRESH_MS (2 min) porque o Chrome derruba o timer desta
+    // aba para ~1x/min quando ela está em segundo plano — janela curta demais daria
+    // "saiu da call" no meio da reunião só por a aba estar atrás de outra janela.
+    const callHere = DomAdapter.isInCall(document);
+    if (callHere) markCallSeen(now);
+    const callNow = callHere ||
+      (callSeenAt > 0 && now - callSeenAt < TranscriptCore.CALL_FRESH_MS);
     if (callNow) { sawCallUi = true; callGoneAt = 0; }
     else if (sawCallUi && !callGoneAt) callGoneAt = now;
     const inCall = callNow ? true : (sawCallUi ? false : null);
 
-    // Troca de reunião (só threadId decide, com confirmação) — só enquanto há sessão.
+    // Sinais de fronteira entre reuniões — só enquanto há sessão aberta.
     let threadSwitch = false;
+    let threadLost = false;
+    let titleSwitch = false;
     if (capturing) {
       const observed = TranscriptCore.parseMeetingThreadId(location.href);
       const decision = TranscriptCore.decideMeetingSwitch(currentThreadId, observed, switchConfirm);
       switchConfirm = decision.confirmState;
       if (decision.action === 'adopt') currentThreadId = decision.currentThreadId;
       if (decision.action === 'switch') threadSwitch = true;
+      if (decision.action === 'lost') threadLost = true;
+
+      // Título como sinal SECUNDÁRIO: é o que separa reuniões consecutivas da
+      // agenda quando o threadId não muda e a call não é reconhecida.
+      const observedTitle = TranscriptCore.normalizeMeetingTitle(document.title);
+      const titleDecision = TranscriptCore.decideTitleSwitch(currentTitleKey, observedTitle, titleConfirm);
+      titleConfirm = titleDecision.confirmState;
+      if (titleDecision.action === 'adopt') currentTitleKey = titleDecision.currentTitle;
+      if (titleDecision.action === 'switch') titleSwitch = true;
     }
 
     const action = TranscriptCore.decideSessionLifecycle({
@@ -111,6 +153,8 @@
       sinceCallGoneMs: callGoneAt ? now - callGoneAt : 0,
       sinceLastSpeechMs: capturing && lastSpeechAt ? now - lastSpeechAt : 0,
       threadSwitch: threadSwitch,
+      titleSwitch: titleSwitch,
+      threadLost: threadLost,
     });
 
 
@@ -128,11 +172,13 @@
     } else if (action === 'finalize') {
       if (capturing) {
         if (typeof console !== 'undefined' && console.warn) {
-          if (threadSwitch) {
-            console.warn('[Transcreve Agenda] troca de reunião confirmada (threadId) — finalizando a anterior');
-          } else if (hasCaptions) {
-            console.warn('[Transcreve Agenda] silêncio prolongado com painel aberto — finalizando a reunião anterior');
-          }
+          let reason = 'fim da reunião';
+          if (threadSwitch) reason = 'troca de reunião confirmada (threadId)';
+          else if (titleSwitch) reason = 'troca de reunião confirmada (título)';
+          else if (threadLost) reason = 'saiu da reunião (URL sem threadId, fora da call)';
+          else if (inCall === false) reason = 'UI de call sumiu';
+          else if (hasCaptions) reason = 'silêncio prolongado com painel aberto';
+          console.warn('[Transcreve Agenda] ' + reason + ' — finalizando a anterior');
         }
         endCapture();
         // Troca de reunião OU corte por silêncio com o painel ainda aberto: a
@@ -167,7 +213,11 @@
     capturing = true;
     committedEntries = []; // buffer local SEMPRE limpo ao abrir a sessão nova
     currentThreadId = TranscriptCore.parseMeetingThreadId(location.href);
-    switchConfirm = { candidate: '', count: 0 };
+    switchConfirm = { candidate: '', count: 0, lost: 0 };
+    // Identidade por título da reunião que está começando AGORA — é contra ela que
+    // os próximos ticks comparam para detectar a reunião seguinte.
+    currentTitleKey = TranscriptCore.normalizeMeetingTitle(document.title);
+    titleConfirm = { candidate: '', count: 0 };
     // Nova sessão re-aprende a UI de call e reinicia os relógios de ausência.
     sawCallUi = false;
     callGoneAt = 0;
@@ -247,7 +297,9 @@
     detach();
     capturing = false;
     currentThreadId = ''; // próxima captura recomputa a identidade do zero
-    switchConfirm = { candidate: '', count: 0 };
+    switchConfirm = { candidate: '', count: 0, lost: 0 };
+    currentTitleKey = '';
+    titleConfirm = { candidate: '', count: 0 };
     captionsGoneAt = 0;
     callGoneAt = 0;
     sawCallUi = false;
@@ -431,6 +483,14 @@
     if (changes[ENTRIES_KEY]) {
       const next = changes[ENTRIES_KEY].newValue;
       if (Array.isArray(next) && next.length === 0) committedEntries = [];
+    }
+
+    // Outro frame viu a UI de call: adota o carimbo mais recente. Não chamamos
+    // tick() aqui — o próximo já lê o valor atualizado, e um tick por escrita de
+    // carimbo só geraria trabalho repetido.
+    if (changes[CALLSEEN_KEY]) {
+      const seen = changes[CALLSEEN_KEY].newValue;
+      if (typeof seen === 'number' && seen > callSeenAt) callSeenAt = seen;
     }
   });
 

@@ -20,7 +20,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const VERSION = '0.3.5';
+  const VERSION = '0.3.6';
   const COLLAPSE_WHITESPACE = /\s+/g;
   const MAX_HISTORY = 10;
   // Janela para colapsar parciais consecutivos do mesmo autor na exportação.
@@ -30,6 +30,18 @@
   // Ticks consecutivos com um threadId novo antes de confirmar a troca de reunião
   // (a ~2s por tick, ~4s). Evita falsa troca por estado transitório da URL.
   const SWITCH_CONFIRM_TICKS = 2;
+  // Ticks consecutivos com um TÍTULO novo antes de confirmar a troca. Maior que o
+  // do threadId porque o título é mais volátil — daí a normalização forte e a
+  // regra de prefixo em decideTitleSwitch.
+  const TITLE_CONFIRM_TICKS = 3;
+  // Ticks com a URL SEM threadId, tendo um antes, para sinalizar 'lost' (~16s).
+  // Sozinho não encerra nada: só vira fim quando a call também não está ativa.
+  const THREAD_LOST_TICKS = 8;
+  // Por quanto tempo um "vi a UI de call" registrado por QUALQUER frame continua
+  // valendo. Precisa ser bem maior que o throttle de timer de aba em segundo plano
+  // (o Chrome derruba setInterval para ~1x/min), senão a reunião seria dada como
+  // encerrada só porque a aba está atrás de outra janela.
+  const CALL_FRESH_MS = 120000;
   // Fora da call (detector confiável) por esse tempo = reunião acabou → finaliza.
   const CALL_GONE_GRACE_MS = 25000;
   // Detector de call indeterminado (tenant desconhecido): só finaliza por AUSÊNCIA
@@ -449,6 +461,66 @@
   }
 
   /**
+   * Títulos que não identificam reunião nenhuma — são telas do app. Trocar de/para
+   * um destes NUNCA conta como troca de reunião (o SPA passa por eles ao navegar).
+   * Comparados já normalizados por normalizeForCompare (minúsculo, sem pontuação).
+   */
+  const GENERIC_TITLES = new Set([
+    'microsoft teams', 'teams', 'chat', 'chats', 'calendario', 'calendário',
+    'calendar', 'atividade', 'activity', 'equipes', 'arquivos', 'reuniao',
+    'reunião', 'reunioes', 'reuniões', 'meeting', 'meet now', 'reuniao agora',
+  ]);
+
+  /**
+   * Reduz o `document.title` a uma CHAVE de identidade da reunião. Tira o sufixo
+   * do app ("| Microsoft Teams"), o contador de não-lidas ("(3) ") e normaliza
+   * para comparação. Devolve '' para título vazio ou de tela genérica — e '' nunca
+   * dispara troca, então na dúvida a extensão não corta.
+   */
+  function normalizeMeetingTitle(raw) {
+    let s = String(raw == null ? '' : raw);
+    s = s.replace(/\s*[|\-–—]\s*Microsoft Teams.*$/i, ''); // sufixo do app
+    s = s.replace(/^\s*\(\s*\d+\s*\)\s*/, ''); // contador de não-lidas "(3) "
+    const key = normalizeForCompare(s);
+    return GENERIC_TITLES.has(key) ? '' : key;
+  }
+
+  /**
+   * Troca de reunião pelo TÍTULO — sinal SECUNDÁRIO, para quando o threadId não
+   * muda (ou nem existe na URL) e a UI de call não é reconhecida. É o caso das
+   * reuniões consecutivas da agenda, em que o painel de legendas fica aberto e o
+   * intervalo é curto demais para o corte por silêncio.
+   *
+   * O título é volátil de propósito no Teams (falante ativo, contador), então há
+   * três defesas: normalização (normalizeMeetingTitle), regra de prefixo — se um
+   * título contém o outro é o MESMO com sufixo dinâmico, não troca — e confirmação
+   * por TITLE_CONFIRM_TICKS ticks consecutivos.
+   *
+   * Mesmo contrato de decideMeetingSwitch: { action, currentTitle, confirmState },
+   * com action 'none' | 'adopt' | 'switch'.
+   */
+  function decideTitleSwitch(current, observed, confirmState) {
+    const cur = String(current || '');
+    const obs = String(observed || '');
+    const reset = { candidate: '', count: 0 };
+
+    if (!obs) return { action: 'none', currentTitle: cur, confirmState: reset };
+    if (obs === cur) return { action: 'none', currentTitle: cur, confirmState: reset };
+    if (!cur) return { action: 'adopt', currentTitle: obs, confirmState: reset };
+    // Um contém o outro: mesmo título ganhando/perdendo sufixo dinâmico.
+    if (obs.indexOf(cur) === 0 || cur.indexOf(obs) === 0) {
+      return { action: 'none', currentTitle: cur, confirmState: reset };
+    }
+
+    const prev = confirmState && confirmState.candidate === obs ? confirmState.count : 0;
+    const count = prev + 1;
+    if (count >= TITLE_CONFIRM_TICKS) {
+      return { action: 'switch', currentTitle: obs, confirmState: reset };
+    }
+    return { action: 'none', currentTitle: cur, confirmState: { candidate: obs, count: count } };
+  }
+
+  /**
    * Máquina de decisão de troca de reunião — SÓ threadId decide. Recebe o threadId
    * da captura atual (`current`, '' se começou sem thread), o threadId observado
    * agora na URL (`observed`, '' se a URL não tem thread neste instante) e o estado
@@ -459,17 +531,30 @@
    *                      adota o threadId sem trocar nem salvar;
    *   - action 'switch'→ threadId genuinamente diferente PERSISTIU N ticks: é outra
    *                      reunião, finaliza a anterior e começa a nova.
+   *   - action 'lost'  → tinha threadId e a URL está sem ele há THREAD_LOST_TICKS
+   *                      ticks: SUSPEITA de saída da reunião. Sozinho não encerra
+   *                      nada — decideSessionLifecycle só honra quando a call
+   *                      também não está ativa, porque o SPA perde o id da URL ao
+   *                      navegar para o chat com a reunião ainda rolando.
    *
-   * URL sem thread agora NUNCA troca (é só o SPA sem o id na URL, não é fim). Um
+   * URL sem thread agora NUNCA troca de reunião (no máximo sinaliza 'lost'). Um
    * único tick com id diferente seguido de volta ao original NÃO troca (o contador
    * zera quando o observado volta a bater com o atual).
    */
   function decideMeetingSwitch(current, observed, confirmState) {
     const cur = String(current || '');
     const obs = String(observed || '');
-    const reset = { candidate: '', count: 0 };
+    const prevLost = confirmState && typeof confirmState.lost === 'number' ? confirmState.lost : 0;
+    const reset = { candidate: '', count: 0, lost: 0 };
 
-    if (!obs) return { action: 'none', currentThreadId: cur, confirmState: reset };
+    if (!obs) {
+      // Sem threadId na URL. Se nunca houve um, não há o que perder.
+      if (!cur) return { action: 'none', currentThreadId: cur, confirmState: reset };
+      const lost = prevLost + 1;
+      const state = { candidate: '', count: 0, lost: lost };
+      const action = lost >= THREAD_LOST_TICKS ? 'lost' : 'none';
+      return { action: action, currentThreadId: cur, confirmState: state };
+    }
     if (obs === cur) return { action: 'none', currentThreadId: cur, confirmState: reset };
     if (!cur) return { action: 'adopt', currentThreadId: obs, confirmState: reset };
 
@@ -479,7 +564,7 @@
     if (count >= SWITCH_CONFIRM_TICKS) {
       return { action: 'switch', currentThreadId: obs, confirmState: reset };
     }
-    return { action: 'none', currentThreadId: cur, confirmState: { candidate: obs, count: count } };
+    return { action: 'none', currentThreadId: cur, confirmState: { candidate: obs, count: count, lost: 0 } };
   }
 
   /**
@@ -489,10 +574,13 @@
    * fim depende da reunião estar ativa.
    *
    * `x`: { sessionOpen, inCall, hasCaptions, sinceCaptionsGoneMs, sinceCallGoneMs,
-   *        sinceLastSpeechMs, threadSwitch }
-   *   - inCall: true (UI de call presente) | false (estava e saiu) | null (indeterminado).
+   *        sinceLastSpeechMs, threadSwitch, titleSwitch, threadLost }
+   *   - inCall: true (UI de call presente em ALGUM frame) | false (estava e saiu) |
+   *     null (indeterminado).
    *   - sinceLastSpeechMs: há quanto tempo nenhuma fala NOVA é comitada (o relógio
-   *     zera no início da sessão e a cada fala) — separa reuniões consecutivas.
+   *     zera no início da sessão e a cada fala) — rede de segurança para gaps longos.
+   *   - titleSwitch: o título da reunião mudou e a troca foi confirmada.
+   *   - threadLost: a URL perdeu o threadId que tinha (só encerra fora da call).
    * Retorna 'capture' | 'pause' | 'finalize' | 'idle'.
    *   - capture : há legenda → observa e comita.
    *   - pause   : sem legenda mas ainda na call → destaca o observer, NÃO finaliza.
@@ -506,6 +594,12 @@
     if (!x || !x.sessionOpen) return hasCaptions ? 'capture' : 'idle';
 
     if (x.threadSwitch) return 'finalize';
+    // Título trocou (confirmado): reunião seguinte da agenda. Corta em segundos, o
+    // que o corte por silêncio não consegue fazer com reuniões coladas.
+    if (x.titleSwitch) return 'finalize';
+    // URL perdeu o threadId E a call não está ativa: saiu da reunião. Com a call
+    // ativa isso é só o SPA navegando — nunca encerra.
+    if (x.threadLost && x.inCall !== true) return 'finalize';
 
     // Silêncio prolongado encerra a sessão INDEPENDENTE de painel e de threadId.
     // Sem isso, painel de legendas que fica aberto entre duas reuniões mantém uma
@@ -573,6 +667,7 @@
   return {
     VERSION,
     MAX_HISTORY,
+    CALL_FRESH_MS,
     normalize,
     normalizeForCompare,
     createStore,
@@ -593,6 +688,8 @@
     buildAutoSaveFilename,
     parseMeetingThreadId,
     stableMeetingId,
+    normalizeMeetingTitle,
+    decideTitleSwitch,
     decideMeetingSwitch,
     decideSessionLifecycle,
     shouldAutoSave,

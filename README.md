@@ -49,17 +49,32 @@ interação com a tela, reciclagem interna do Teams) — quando isso acontece a
 captura só **pausa** e retoma quando a legenda volta, sem finalizar nada. A
 sessão só é finalizada, **salva automaticamente em disco** (veja abaixo) e vai
 para o **histórico** quando a reunião realmente acaba (você sai da call e ela
-some por ~25 s), quando você troca de reunião, fecha a aba ou clica em **Parar**.
+some por ~25 s), quando você entra na reunião seguinte, fecha a aba ou clica em
+**Parar**.
 As últimas 10 sessões ficam listadas no popup, prontas para exportar depois em
 `.md`, `.txt` ou `.json`.
 
 Cada reunião vira **um arquivo separado**. Como o Teams web é um app de página
-única (não recarrega ao trocar de reunião), a extensão identifica cada reunião
-pelo **id de thread na URL** (`19:meeting_…`) — e só por ele: o título da aba é
-volátil no meio da reunião (falante ativo, contador de chat) e por isso nunca
-decide troca. Quando o id de thread muda e **persiste** por alguns segundos, a
-reunião anterior é finalizada e salva antes de a nova começar do zero. Uma
-reunião nunca é anexada à outra, e o arquivo nunca baixa no meio da conversa.
+única (não recarrega ao trocar de reunião), a extensão usa quatro sinais para
+saber onde uma reunião termina e a outra começa, do mais confiável ao mais frágil:
+
+1. **Id de thread na URL** (`19:meeting_…`) muda e persiste por alguns segundos.
+2. **A UI de call some** por ~25 s — você saiu da reunião. Esse sinal é lido de
+   forma **agregada entre os frames** da página: o botão de desligar mora no
+   quadro principal, enquanto as legendas costumam vir de outro, então cada quadro
+   registra o que enxerga e todos leem o registro mais recente.
+3. **O título da reunião muda** e a mudança se confirma por alguns segundos. É o
+   que separa reuniões coladas na agenda, quando o id de thread não muda e o
+   painel de legendas fica aberto entre uma e outra. O título é volátil (falante
+   ativo, contador de chat), então ele passa por três filtros antes de valer:
+   normalização, regra de prefixo (título que só ganhou um sufixo é o mesmo
+   título) e confirmação em ticks consecutivos.
+4. **Silêncio prolongado** (15 min na call, 8 min fora dela) — rede de segurança
+   para gaps longos, não o mecanismo principal.
+
+Qualquer um deles finaliza e salva a reunião anterior antes de a nova começar do
+zero. Uma reunião nunca é anexada à outra, e o arquivo nunca baixa no meio da
+conversa.
 
 Se preferir o controle manual, desligue o **Modo automático** no popup: voltam os
 botões **Iniciar captura** / **Parar** / **Limpar**.
