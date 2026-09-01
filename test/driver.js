@@ -366,6 +366,36 @@ const NO_TITLE_CONFIRM = { candidate: '', count: 0 };
 check('título vazio (tela genérica) nunca troca',
   T.decideTitleSwitch('reunião a', '', NO_TITLE_CONFIRM).action === 'none');
 
+// REPRODUÇÃO DO BUG 01/09: trocar de aba dentro do MESMO Teams (Calendário →
+// Chat) durante a call muda o prefixo do document.title sem a reunião ter
+// mudado — "(3) Calendar | X | Microsoft Teams" vira "(4) Chat | X | Microsoft
+// Teams". Isso cortou uma reunião de 52 min em 4 arquivos. A chave de
+// identidade tem que ignorar esse prefixo de seção, não só o contador.
+check('prefixo de seção "Calendar |" não muda a chave da reunião',
+  T.normalizeMeetingTitle('(3) Calendar | [SEGURANÇA][BIOMETRIA SMP - GE] - Revisão SD. | Microsoft Teams') ===
+  T.normalizeMeetingTitle('(8) Chat | [SEGURANÇA][BIOMETRIA SMP - GE] - Revisão SD. | Microsoft Teams'));
+check('prefixo de seção isolado (sem sufixo do app) também é removido',
+  T.normalizeMeetingTitle('(4) Chat | Reunião X') === T.normalizeMeetingTitle('(7) Chat | Reunião X'));
+(function () {
+  let titleKey = T.normalizeMeetingTitle('(3) Calendar | [SEGURANÇA][BIOMETRIA SMP - GE] - Revisão SD. | Microsoft Teams');
+  let titleCs = NO_TITLE_CONFIRM;
+  let switches = 0;
+  const seq = [
+    '(4) Chat | [SEGURANÇA][BIOMETRIA SMP - GE] - Revisão SD. | Microsoft Teams',
+    '(7) Chat | [SEGURANÇA][BIOMETRIA SMP - GE] - Revisão SD. | Microsoft Teams',
+    '(8) Chat | [SEGURANÇA][BIOMETRIA SMP - GE] - Revisão SD. | Microsoft Teams',
+  ];
+  for (const raw of seq) {
+    for (let i = 0; i < 3; i++) { // ticks suficientes para confirmar, se fosse trocar
+      const d = T.decideTitleSwitch(titleKey, T.normalizeMeetingTitle(raw), titleCs);
+      titleCs = d.confirmState;
+      if (d.action === 'adopt') titleKey = d.currentTitle;
+      if (d.action === 'switch') switches++;
+    }
+  }
+  check('trocar Calendário↔Chat várias vezes na mesma reunião → 0 cortes', switches === 0);
+})();
+
 // ============================================================================
 console.log('\nFronteira entre reuniões — perda do threadId na URL\n');
 

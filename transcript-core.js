@@ -20,7 +20,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const VERSION = '0.3.6';
+  const VERSION = '0.3.7';
   const COLLAPSE_WHITESPACE = /\s+/g;
   const MAX_HISTORY = 10;
   // Janela para colapsar parciais consecutivos do mesmo autor na exportação.
@@ -471,16 +471,39 @@
     'reunião', 'reunioes', 'reuniões', 'meeting', 'meet now', 'reuniao agora',
   ]);
 
+  // Nomes das seções da barra lateral do Teams que aparecem PREFIXADAS ao título
+  // real ("(3) Calendar | Título da reunião | Microsoft Teams"). Trocar de aba
+  // (Calendário → Chat, por ex.) durante a MESMA call muda esse prefixo sem que a
+  // reunião tenha mudado — por isso é removido antes da chave de identidade, não
+  // só comparado como título genérico isolado. Mesmas palavras de GENERIC_TITLES,
+  // exceto "microsoft teams" (que é o sufixo, tratado à parte).
+  const VIEW_PREFIX_RE = new RegExp(
+    '^\\s*(?:' +
+      Array.from(GENERIC_TITLES)
+        .filter(function (w) { return w !== 'microsoft teams'; })
+        .sort(function (a, b) { return b.length - a.length; }) // mais específico primeiro
+        .join('|') +
+      ')\\s*\\|\\s*',
+    'i'
+  );
+
   /**
    * Reduz o `document.title` a uma CHAVE de identidade da reunião. Tira o sufixo
-   * do app ("| Microsoft Teams"), o contador de não-lidas ("(3) ") e normaliza
-   * para comparação. Devolve '' para título vazio ou de tela genérica — e '' nunca
+   * do app ("| Microsoft Teams"), o contador de não-lidas ("(3) "), o prefixo de
+   * seção da barra lateral ("Calendar | ", "Chat | " — repetido até não sobrar
+   * nenhum, pois o Teams às vezes empilha mais de um) e normaliza para
+   * comparação. Devolve '' para título vazio ou de tela genérica — e '' nunca
    * dispara troca, então na dúvida a extensão não corta.
    */
   function normalizeMeetingTitle(raw) {
     let s = String(raw == null ? '' : raw);
     s = s.replace(/\s*[|\-–—]\s*Microsoft Teams.*$/i, ''); // sufixo do app
     s = s.replace(/^\s*\(\s*\d+\s*\)\s*/, ''); // contador de não-lidas "(3) "
+    let prev;
+    do {
+      prev = s;
+      s = s.replace(VIEW_PREFIX_RE, '');
+    } while (s !== prev);
     const key = normalizeForCompare(s);
     return GENERIC_TITLES.has(key) ? '' : key;
   }
