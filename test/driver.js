@@ -434,8 +434,12 @@ check('nunca houve threadId → sem suspeita de perda',
 // ============================================================================
 console.log('\nCiclo de vida com os sinais novos\n');
 
-check('titleSwitch → finalize mesmo na call e com painel aberto',
-  T.decideSessionLifecycle({ sessionOpen: true, inCall: true, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 0, titleSwitch: true }) === 'finalize');
+check('titleSwitch NA CALL → não finaliza (título é ruído com a reunião ao vivo)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: true, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 0, titleSwitch: true }) === 'capture');
+check('titleSwitch com call indeterminada → finalize (reuniões consecutivas)',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: null, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 0, titleSwitch: true }) === 'finalize');
+check('titleSwitch fora da call → finalize',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: false, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 0, titleSwitch: true }) === 'finalize');
 check('threadLost NA CALL → não finaliza (SPA só navegou para o chat)',
   T.decideSessionLifecycle({ sessionOpen: true, inCall: true, hasCaptions: true, sinceCaptionsGoneMs: 0, sinceCallGoneMs: 0, sinceLastSpeechMs: 0, threadLost: true }) === 'capture');
 check('threadLost com call indeterminada → finalize',

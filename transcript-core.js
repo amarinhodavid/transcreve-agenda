@@ -20,7 +20,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const VERSION = '0.3.7';
+  const VERSION = '0.3.8';
   const COLLAPSE_WHITESPACE = /\s+/g;
   const MAX_HISTORY = 10;
   // Janela para colapsar parciais consecutivos do mesmo autor na exportação.
@@ -617,9 +617,11 @@
     if (!x || !x.sessionOpen) return hasCaptions ? 'capture' : 'idle';
 
     if (x.threadSwitch) return 'finalize';
-    // Título trocou (confirmado): reunião seguinte da agenda. Corta em segundos, o
-    // que o corte por silêncio não consegue fazer com reuniões coladas.
-    if (x.titleSwitch) return 'finalize';
+    // Título trocou (confirmado) E a call NÃO está confirmada: reunião seguinte da
+    // agenda. Corta em segundos, o que o corte por silêncio não consegue fazer com
+    // reuniões coladas. Com a call confirmada o título é ruído (falante ativo,
+    // contador, troca de aba) e cortar ali parte a reunião ao vivo em dois arquivos.
+    if (x.titleSwitch && x.inCall !== true) return 'finalize';
     // URL perdeu o threadId E a call não está ativa: saiu da reunião. Com a call
     // ativa isso é só o SPA navegando — nunca encerra.
     if (x.threadLost && x.inCall !== true) return 'finalize';
