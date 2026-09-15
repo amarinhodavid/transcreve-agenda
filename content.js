@@ -62,14 +62,64 @@
   let sawCallUi = false; // já vimos a UI de call nesta sessão (confia no "false" depois)
   let lastSpeechAt = 0; // última fala COMITADA (0 = sem sessão); base do corte por silêncio
 
+  // Recarregar/atualizar a extensão deixa ÓRFÃO todo content script já injetado:
+  // o `chrome.runtime` dele aponta para um contexto morto e qualquer chamada lança
+  // "Extension context invalidated" — exceção SÍNCRONA, que derrubava o tick inteiro
+  // e matava a captura sem nenhum sinal visível. Só recarregar a aba do Teams religa,
+  // então aqui a resposta é específica: parar o motor e dizer o que fazer.
+  let contextDead = false;
+
+  function contextAlive() {
+    try {
+      return !!(chrome.runtime && chrome.runtime.id);
+    } catch (_invalidated) {
+      return false;
+    }
+  }
+
+  function markContextDead() {
+    if (contextDead) return;
+    contextDead = true;
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    detach();
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('[Transcreve Agenda] a extensão foi recarregada e este content script ficou órfão — recarregue a aba do Teams (F5) para voltar a capturar.');
+    }
+  }
+
   function sendToBackground(message) {
-    const p = chrome.runtime.sendMessage(message);
-    // Fire-and-forget: sem receptor o SW pode rejeitar; não é erro nosso.
-    if (p && typeof p.catch === 'function') p.catch(function () {});
+    if (contextDead) return;
+    if (!contextAlive()) { markContextDead(); return; }
+    try {
+      const p = chrome.runtime.sendMessage(message);
+      // Fire-and-forget: sem receptor o SW pode rejeitar; não é erro nosso.
+      if (p && typeof p.catch === 'function') p.catch(function () {});
+    } catch (_invalidated) {
+      markContextDead();
+    }
+  }
+
+  // Mesma proteção para o storage: é o outro canal com a extensão no caminho
+  // quente (cada fala comitada e cada carimbo de call passam por aqui).
+  function storageSet(patch) {
+    if (contextDead) return;
+    if (!contextAlive()) { markContextDead(); return; }
+    try {
+      const p = chrome.storage.local.set(patch);
+      if (p && typeof p.catch === 'function') p.catch(function () {});
+    } catch (_invalidated) {
+      markContextDead();
+    }
   }
 
   async function init() {
-    const data = await chrome.storage.local.get([ENTRIES_KEY, CAPSTATE_KEY, AUTOMODE_KEY, CALLSEEN_KEY]);
+    let data;
+    try {
+      data = await chrome.storage.local.get([ENTRIES_KEY, CAPSTATE_KEY, AUTOMODE_KEY, CALLSEEN_KEY]);
+    } catch (_invalidated) {
+      markContextDead(); // extensão recarregada antes mesmo deste frame subir
+      return;
+    }
     committedEntries = Array.isArray(data[ENTRIES_KEY]) ? data[ENTRIES_KEY] : [];
     autoMode = data[AUTOMODE_KEY] !== false; // padrão ON
     manualRequested = !!(data[CAPSTATE_KEY] && data[CAPSTATE_KEY].capturing);
@@ -83,7 +133,7 @@
     callSeenAt = now;
     if (now - lastCallMark < CALL_MARK_THROTTLE_MS) return;
     lastCallMark = now;
-    chrome.storage.local.set({ [CALLSEEN_KEY]: now });
+    storageSet({ [CALLSEEN_KEY]: now });
   }
 
   // Um único laço serve aos dois modos: procura o container e decide o que fazer.
@@ -93,6 +143,7 @@
   }
 
   function tick() {
+    if (contextDead) return;
     const now = Date.now();
     const found = DomAdapter.findCaptions(document);
     const hasCaptions = !!found.container;
@@ -311,7 +362,7 @@
   function persistEntry(entry) {
     lastSpeechAt = Date.now(); // fala nova = reunião viva; zera o relógio do silêncio
     committedEntries.push(entry);
-    chrome.storage.local.set({ [ENTRIES_KEY]: committedEntries });
+    storageSet({ [ENTRIES_KEY]: committedEntries });
   }
 
   function scan() {
@@ -498,7 +549,7 @@
     if (msg && msg.type === 'DIAGNOSE') {
       // Só o frame de topo monta o relatório completo (ele enxerga os iframes).
       const report = buildDiagnostic();
-      chrome.storage.local.set({ diagnostico: { report, ts: Date.now() } });
+      storageSet({ diagnostico: { report, ts: Date.now() } });
       sendResponse({ ok: true, report });
       return false;
     }
