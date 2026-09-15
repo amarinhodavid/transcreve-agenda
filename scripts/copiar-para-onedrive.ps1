@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
     Duplicador standalone: copia (nunca move) as transcrições que a extensão salva
-    em Downloads\Transcricoes Teams para uma pasta do OneDrive, a cada 5 minutos.
+    em Downloads\Transcricoes Teams para uma pasta do OneDrive, a cada 30 minutos.
 
     Diferente de sync-transcricoes.ps1 (que MOVE para a pasta do projeto e depois
     espelha), este script não depende do repositório — é um arquivo único, pensado
@@ -13,7 +13,7 @@
       2. Edite $DestinoOneDrive logo abaixo com o caminho real do OneDrive lá.
       3. Rode uma vez para instalar a tarefa agendada:
            powershell -NoProfile -ExecutionPolicy Bypass -File .\copiar-para-onedrive.ps1 -Instalar
-      4. Pronto — a cada 5 min ele confere Downloads\Transcricoes Teams e copia
+      4. Pronto — a cada 30 min ele confere Downloads\Transcricoes Teams e copia
          o que for novo ou tiver mudado. Nada em Downloads é apagado nem movido.
 #>
 [CmdletBinding()]
@@ -102,19 +102,19 @@ function Install-Tarefa {
     if (-not $scriptPath) { $scriptPath = $PSCommandPath }
     $argumentos = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $scriptPath
     $usuario = "$env:USERDOMAIN\$env:USERNAME"
-    $descricao = 'Copia as transcrições do Teams de Downloads para o OneDrive, sem apagar o original (a cada 5 min e no logon).'
+    $descricao = 'Copia as transcrições do Teams de Downloads para o OneDrive, sem apagar o original (a cada 30 min e no logon).'
 
     try {
         $acao = New-ScheduledTaskAction -Execute $engine -Argument $argumentos
-        $gatilho5min = New-ScheduledTaskTrigger -Once -At (Get-Date) `
-            -RepetitionInterval (New-TimeSpan -Minutes 5) `
+        $gatilho30min = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+            -RepetitionInterval (New-TimeSpan -Minutes 30) `
             -RepetitionDuration (New-TimeSpan -Days 3650)
         $gatilhoLogon = New-ScheduledTaskTrigger -AtLogOn
         $principal = New-ScheduledTaskPrincipal -UserId $usuario -LogonType Interactive -RunLevel Limited
         $config = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
             -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
         Register-ScheduledTask -TaskName $nomeTarefa -Description $descricao `
-            -Action $acao -Trigger $gatilho5min, $gatilhoLogon -Principal $principal -Settings $config -Force | Out-Null
+            -Action $acao -Trigger $gatilho30min, $gatilhoLogon -Principal $principal -Settings $config -Force | Out-Null
         Write-Host "Tarefa '$nomeTarefa' registrada via Register-ScheduledTask. Engine: $engine"
     }
     catch {
@@ -128,7 +128,7 @@ function Install-Tarefa {
   <Triggers>
     <LogonTrigger><Enabled>true</Enabled><UserId>$usuario</UserId></LogonTrigger>
     <TimeTrigger>
-      <Repetition><Interval>PT5M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
+      <Repetition><Interval>PT30M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
       <StartBoundary>$inicio</StartBoundary>
       <Enabled>true</Enabled>
     </TimeTrigger>
