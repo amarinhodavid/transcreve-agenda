@@ -105,18 +105,60 @@ if ($Instalar) {
     $usuario = "$env:USERDOMAIN\$env:USERNAME"
     $descricao = 'Envia por e-mail as transcrições novas do Teams, como anexo (a cada 30 min e no logon).'
 
-    $acao = New-ScheduledTaskAction -Execute $engine -Argument $argumentos
-    $gatilho30min = New-ScheduledTaskTrigger -Once -At (Get-Date) `
-        -RepetitionInterval (New-TimeSpan -Minutes 30) `
-        -RepetitionDuration (New-TimeSpan -Days 3650)
-    $gatilhoLogon = New-ScheduledTaskTrigger -AtLogOn
-    $principal = New-ScheduledTaskPrincipal -UserId $usuario -LogonType Interactive -RunLevel Limited
-    $config = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
-        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-    Register-ScheduledTask -TaskName $nomeTarefa -Description $descricao `
-        -Action $acao -Trigger $gatilho30min, $gatilhoLogon -Principal $principal -Settings $config -Force | Out-Null
-
-    Write-Host "Tarefa '$nomeTarefa' registrada. Engine: $engine"
+    # Register-ScheduledTask primeiro. Em shell destacado (sem token interativo) o
+    # canal CIM local devolve "Acesso negado" — aí cai para schtasks.exe /XML, que
+    # usa COM direto e registra a mesma tarefa sem elevação. Mesmo padrão dos outros
+    # scripts do projeto.
+    try {
+        $acao = New-ScheduledTaskAction -Execute $engine -Argument $argumentos
+        $gatilho30min = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+            -RepetitionInterval (New-TimeSpan -Minutes 30) `
+            -RepetitionDuration (New-TimeSpan -Days 3650)
+        $gatilhoLogon = New-ScheduledTaskTrigger -AtLogOn
+        $principal = New-ScheduledTaskPrincipal -UserId $usuario -LogonType Interactive -RunLevel Limited
+        $config = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
+            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+        Register-ScheduledTask -TaskName $nomeTarefa -Description $descricao `
+            -Action $acao -Trigger $gatilho30min, $gatilhoLogon -Principal $principal -Settings $config -Force | Out-Null
+        Write-Host "Tarefa '$nomeTarefa' registrada via Register-ScheduledTask. Engine: $engine"
+    }
+    catch {
+        Write-Host "Register-ScheduledTask indisponível ($($_.Exception.Message.Trim())). Usando schtasks.exe."
+        $inicio = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ss')
+        $cmdArgs = [System.Security.SecurityElement]::Escape($argumentos)
+        $xml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>$descricao</Description></RegistrationInfo>
+  <Triggers>
+    <LogonTrigger><Enabled>true</Enabled><UserId>$usuario</UserId></LogonTrigger>
+    <TimeTrigger>
+      <Repetition><Interval>PT30M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
+      <StartBoundary>$inicio</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author"><UserId>$usuario</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <Enabled>true</Enabled>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author"><Exec><Command>$engine</Command><Arguments>$cmdArgs</Arguments></Exec></Actions>
+</Task>
+"@
+        $xmlPath = Join-Path $env:TEMP 'EnviarTranscricoesEmail.xml'
+        Set-Content -LiteralPath $xmlPath -Value $xml -Encoding Unicode
+        $saida = schtasks.exe /Create /TN $nomeTarefa /XML $xmlPath /F 2>&1
+        Remove-Item -LiteralPath $xmlPath -ErrorAction SilentlyContinue
+        if ($LASTEXITCODE -ne 0) { throw "schtasks falhou (código $LASTEXITCODE): $saida" }
+        Write-Host "Tarefa '$nomeTarefa' registrada via schtasks.exe. Engine: $engine"
+    }
     return
 }
 
