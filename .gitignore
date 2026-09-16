@@ -23,3 +23,6 @@ scripts/*.log
 
 # Config local de máquina (caminhos de OneDrive/rede) — não pertence ao repo
 scripts/espelhos.local.txt
+
+# Estado local da rotina de e-mail (o que ja foi enviado) — nao pertence ao repo
+scripts/enviados-email.txt
