@@ -240,7 +240,10 @@ Enviado automaticamente pela rotina do Transcreve Agenda.
 
         $smtp = New-Object System.Net.Mail.SmtpClient($SmtpServidor, $SmtpPorta)
         $smtp.EnableSsl = $true
-        $smtp.Credentials = New-Object System.Net.NetworkCredential($cred.UserName, $cred.GetNetworkCredential().Password)
+        # Usuário SMTP vem de $Remetente, não do campo do Get-Credential: o diálogo do
+        # Windows encurta o e-mail para o nome de conta ("amarinhodavid"), e o Gmail
+        # recusa autenticação sem o endereço completo. Da credencial só a senha importa.
+        $smtp.Credentials = New-Object System.Net.NetworkCredential($Remetente, $cred.GetNetworkCredential().Password)
         $smtp.Send($msg)
 
         Add-Content -LiteralPath $enviadosDb -Value $f.Name -Encoding UTF8
