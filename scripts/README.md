@@ -78,8 +78,7 @@ minutos, e no logon).
 
 `WScript.Shell.Run(comando, 0, True)` cria o processo **já oculto**, então não
 existe janela para piscar. O `wscript.exe` (ao contrário do `cscript.exe`) não
-abre console próprio, e o `node` chamado lá dentro herda o mesmo console oculto
-— a cadeia inteira fica invisível.
+abre console próprio — a cadeia inteira fica invisível.
 
 O `True` do `Run` faz o VBS **esperar** o sync terminar e repassar o código de
 saída. Sem isso a tarefa sairia de "Running" imediatamente, a política
@@ -96,6 +95,38 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\instalar-tarefa.ps1
 Se o ambiente tiver o VBScript removido por política, o instalador **avisa** na
 última linha e registra do jeito antigo, para não deixar você sem sync — nesse
 caso a janela volta a piscar.
+
+## O visualizador (`index.html`)
+
+Ao final de cada execução o sync regenera `transcricoes/index.html`: uma página
+única, sem CDN e sem `fetch`, com os `.md` embutidos como JSON. Abre offline por
+`file://` e dá lista por data, navegação por teclado e **busca no conteúdo** de
+todas as reuniões de uma vez.
+
+Quem gera é o `gerar-index.ps1`, rodando dentro do próprio PowerShell do sync.
+Não há dependência de runtime externo: a versão anterior chamava um
+`gerar-index.js` via Node e, em máquina sem Node instalado, a geração ficava
+pulada **em silêncio** — o espelho acabava com as transcrições e sem a página
+que as torna navegáveis. Só restava uma linha no log que ninguém lia.
+
+Para abrir o visualizador na mão, regenerando antes:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\abrir-transcricoes.ps1
+```
+
+### Testes do gerador
+
+As funções de parse (nome de arquivo, cabeçalho do `.md`, contagem de falas) e
+a serialização do JSON têm testes:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\gerar-index.test.ps1
+```
+
+Imprime uma linha por caso e sai com código 1 se algum falhar. Vale rodar depois
+de mexer em qualquer regex de parse — é o que garante que o índice não passe a
+ler as transcrições errado sem ninguém notar.
 
 ## Rodar o sync na mão (sem esperar os 5 min)
 
@@ -143,4 +174,10 @@ O `Execute` precisa terminar em `wscript.exe`. Se aparecer `powershell.exe` ou
 `pwsh.exe` ali, a tarefa ainda é a versão antiga — rode o instalador de novo.
 
 Linhas `ESPELHO ...: N copiado(s), M erro(s)` mostram o resultado de cada destino
-configurado; `ESPELHO ERRO ...` detalha o arquivo que falhou.
+configurado; `ESPELHO ERRO ...` detalha o arquivo que falhou. `INDEX: indexados
+N arquivo(s)` confirma que o visualizador foi regenerado.
+
+Um espelho que falha **não** interrompe o sync, de propósito — mas também não
+aparece em lugar nenhum além do log. Se você depende da cópia em outra pasta,
+confira essas linhas de vez em quando: um caminho de outra máquina no
+`espelhos.local.txt` faz o espelhamento falhar silenciosamente para sempre.
