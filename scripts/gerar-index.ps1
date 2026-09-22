@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
     Gerador do visualizador local de transcrições.
     Varre transcricoes/*.md e produz transcricoes/index.html self-contained

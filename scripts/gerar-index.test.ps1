@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
     Testes das funções puras de gerar-index.ps1.
     Roda com:  powershell -NoProfile -ExecutionPolicy Bypass -File .\gerar-index.test.ps1
@@ -13,7 +13,8 @@
 [CmdletBinding()]
 param()
 
-. (Join-Path $PSScriptRoot 'gerar-index.ps1') -SomenteFuncoes
+$gerador = Join-Path $PSScriptRoot 'gerar-index.ps1'
+. $gerador -SomenteFuncoes
 
 $script:ok = 0
 $script:falhou = 0
