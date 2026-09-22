@@ -134,20 +134,21 @@ foreach ($padrao in $extensoes) {
     }
 }
 
-# Regenera o index.html do visualizador. Só roda se o Node existir no PATH;
-# a falta de Node não pode quebrar o sync (que é a função crítica).
-$gerador = Join-Path $PSScriptRoot 'gerar-index.js'
-$node = Get-Command node -ErrorAction SilentlyContinue
-if (-not $node) {
-    Write-SyncLog 'INDEX: node não encontrado no PATH, geração pulada.'
-}
-elseif (-not (Test-Path -LiteralPath $gerador)) {
-    Write-SyncLog 'INDEX: gerar-index.js ausente, geração pulada.'
+# Regenera o index.html do visualizador. Roda dentro deste mesmo PowerShell
+# (dot-source), sem runtime externo: a versão anterior dependia do Node e, numa
+# máquina sem Node instalado, a geração ficava pulada em silêncio — o espelho
+# acabava com as transcrições e sem a página que as torna navegáveis.
+# Ainda assim vai num try: falha ao gerar o índice não pode derrubar o sync,
+# que é a função crítica.
+$gerador = Join-Path $PSScriptRoot 'gerar-index.ps1'
+if (-not (Test-Path -LiteralPath $gerador)) {
+    Write-SyncLog 'INDEX: gerar-index.ps1 ausente, geração pulada.'
 }
 else {
     try {
-        $saida = & $node.Source $gerador 2>&1
-        Write-SyncLog ("INDEX: {0}" -f ($saida -join ' '))
+        . $gerador -SomenteFuncoes
+        $indice = Invoke-GerarIndex
+        Write-SyncLog ("INDEX: indexados {0} arquivo(s)." -f $indice.total)
     }
     catch {
         Write-SyncLog ("INDEX: falha ao gerar index.html: {0}" -f $_.Exception.Message)

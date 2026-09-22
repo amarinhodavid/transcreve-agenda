@@ -8,6 +8,12 @@
     canal CIM local devolve "Acesso negado" (shell destacado, sem token
     interativo), cai para schtasks.exe /XML, que usa COM direto e registra
     a mesma tarefa sem elevação.
+
+    A tarefa NÃO chama o PowerShell direto: chama sync-oculto.vbs via
+    wscript.exe. Chamar powershell.exe/pwsh.exe direto pisca uma janela preta
+    a cada execução mesmo com -WindowStyle Hidden, porque o console host já
+    mostrou a janela antes de o PowerShell ler esse parâmetro. O wscript cria
+    o processo já oculto, então não há janela para piscar.
 #>
 [CmdletBinding()]
 param()
@@ -23,16 +29,38 @@ if (-not (Test-Path -LiteralPath $scriptSync)) {
 }
 
 # pwsh (PS7) se disponível; senão o Windows PowerShell 5.1, com que o script é compatível.
-$engine = 'powershell.exe'
-if (Get-Command pwsh.exe -ErrorAction SilentlyContinue) {
-    $engine = 'pwsh.exe'
+# Caminho completo, não só o nome: a tarefa agendada não herda o PATH da sessão
+# em que o instalador rodou, e um engine "não encontrado" falha silenciosamente.
+$engine = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$pwsh = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+if ($pwsh) {
+    $engine = $pwsh.Source
 }
 
-$argumentos = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $scriptSync
+# Ação da tarefa: wscript.exe abre o processo já oculto (ver cabeçalho). O
+# engine escolhido acima vai como argumento, então a decisão fica só aqui.
+$lancador   = Join-Path $PSScriptRoot 'sync-oculto.vbs'
+$wscript    = Join-Path $env:WINDIR 'System32\wscript.exe'
+$janelaNota = 'sem janela (wscript.exe)'
+
+if ((Test-Path -LiteralPath $lancador) -and (Test-Path -LiteralPath $wscript)) {
+    $executavel = $wscript
+    # //B = modo lote: erro do script vira código de saída, nunca caixa de
+    # diálogo (um popup seria o mesmo problema com outra roupa).
+    $argumentos = '//nologo //B "{0}" "{1}"' -f $lancador, $engine
+}
+else {
+    # VBScript removido por política, ou sync-oculto.vbs ausente: registra do
+    # jeito antigo em vez de falhar. Volta a piscar a janela — avisado abaixo.
+    $executavel = $engine
+    $argumentos = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $scriptSync
+    $janelaNota = 'AVISO: sync-oculto.vbs ou wscript.exe indisponível — a janela do console vai piscar a cada execução'
+}
+
 $usuario = "$env:USERDOMAIN\$env:USERNAME"
 
 function Register-ViaCmdlet {
-    $acao = New-ScheduledTaskAction -Execute $engine -Argument $argumentos
+    $acao = New-ScheduledTaskAction -Execute $executavel -Argument $argumentos
     $gatilho5min = New-ScheduledTaskTrigger -Once -At (Get-Date) `
         -RepetitionInterval (New-TimeSpan -Minutes 5) `
         -RepetitionDuration (New-TimeSpan -Days 3650)
@@ -84,7 +112,7 @@ function Register-ViaSchtasks {
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>$engine</Command>
+      <Command>$executavel</Command>
       <Arguments>$cmdArgs</Arguments>
     </Exec>
   </Actions>
@@ -111,3 +139,4 @@ catch {
 }
 
 Write-Host "Tarefa '$nomeTarefa' registrada via $metodo. Engine: $engine"
+Write-Host "Janela: $janelaNota"

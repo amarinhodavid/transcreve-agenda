@@ -19,7 +19,9 @@ Regras:
 - Registra cada arquivo movido em `sync-transcricoes.log` (uma linha por arquivo,
   com data e hora). Execução sem novidade não escreve nada. Acima de 1 MB, o log
   é truncado mantendo as últimas ~200 linhas.
-- É idempotente e sem janela — pode rodar quantas vezes quiser.
+- É idempotente — pode rodar quantas vezes quiser.
+- Roda **sem aparecer janela** quando disparado pela tarefa agendada (veja
+  [Por que não pisca janela](#por-que-não-pisca-janela)).
 
 Depois de mover os arquivos e regenerar o `index.html`, o script **espelha** a
 pasta de transcrições nos destinos configurados (veja abaixo).
@@ -60,11 +62,79 @@ sem admin), a cada 5 minutos e sempre que você faz logon. O instalador tenta o
 cmdlet `Register-ScheduledTask` e, se o ambiente negar acesso a esse canal, cai
 automaticamente para `schtasks.exe` — o resultado é o mesmo.
 
+Ao final ele imprime duas linhas: o método e o engine usados, e o estado da
+janela. O esperado é `Janela: sem janela (wscript.exe)`.
+
+## Por que não pisca janela
+
+A tarefa **não chama o PowerShell direto**. Ela chama `sync-oculto.vbs` através
+do `wscript.exe`, e é o VBS que abre o PowerShell.
+
+O motivo é específico: `powershell.exe -WindowStyle Hidden` **não** evita a
+janela quando a tarefa dispara. O console host (`conhost.exe`) cria e mostra a
+janela antes de o PowerShell chegar a ler esse parâmetro — ele esconde algo que
+já apareceu. O resultado é uma tela preta piscando a cada execução (a cada 5
+minutos, e no logon).
+
+`WScript.Shell.Run(comando, 0, True)` cria o processo **já oculto**, então não
+existe janela para piscar. O `wscript.exe` (ao contrário do `cscript.exe`) não
+abre console próprio — a cadeia inteira fica invisível.
+
+O `True` do `Run` faz o VBS **esperar** o sync terminar e repassar o código de
+saída. Sem isso a tarefa sairia de "Running" imediatamente, a política
+`IgnoreNew` perderia o efeito e `LastTaskResult` seria sempre 0, mentindo sobre
+o resultado.
+
+**Já tem a tarefa instalada do jeito antigo?** Rode o instalador de novo — ele
+usa `-Force` e substitui a ação da tarefa existente:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\instalar-tarefa.ps1
+```
+
+Se o ambiente tiver o VBScript removido por política, o instalador **avisa** na
+última linha e registra do jeito antigo, para não deixar você sem sync — nesse
+caso a janela volta a piscar.
+
+## O visualizador (`index.html`)
+
+Ao final de cada execução o sync regenera `transcricoes/index.html`: uma página
+única, sem CDN e sem `fetch`, com os `.md` embutidos como JSON. Abre offline por
+`file://` e dá lista por data, navegação por teclado e **busca no conteúdo** de
+todas as reuniões de uma vez.
+
+Quem gera é o `gerar-index.ps1`, rodando dentro do próprio PowerShell do sync.
+Não há dependência de runtime externo: a versão anterior chamava um
+`gerar-index.js` via Node e, em máquina sem Node instalado, a geração ficava
+pulada **em silêncio** — o espelho acabava com as transcrições e sem a página
+que as torna navegáveis. Só restava uma linha no log que ninguém lia.
+
+Para abrir o visualizador na mão, regenerando antes:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\abrir-transcricoes.ps1
+```
+
+### Testes do gerador
+
+As funções de parse (nome de arquivo, cabeçalho do `.md`, contagem de falas) e
+a serialização do JSON têm testes:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\gerar-index.test.ps1
+```
+
+Imprime uma linha por caso e sai com código 1 se algum falhar. Vale rodar depois
+de mexer em qualquer regex de parse — é o que garante que o índice não passe a
+ler as transcrições errado sem ninguém notar.
+
 ## Rodar o sync na mão (sem esperar os 5 min)
 
 ```powershell
-Start-ScheduledTask -TaskName TranscricoesTeamsSync
-# ou diretamente:
+Start-ScheduledTask -TaskName TranscricoesTeamsSync   # oculto, igual ao agendado
+# oculto, sem passar pela tarefa:
+wscript.exe //nologo //B .\sync-oculto.vbs
+# visível, para acompanhar a saída e depurar:
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\sync-transcricoes.ps1
 ```
 
@@ -94,7 +164,20 @@ estão.
 Get-ScheduledTask     -TaskName TranscricoesTeamsSync   # estado (Ready/Running)
 Get-ScheduledTaskInfo -TaskName TranscricoesTeamsSync   # LastRunTime, LastTaskResult (0 = ok)
 Get-Content .\sync-transcricoes.log -Tail 20            # últimos arquivos movidos e espelhados
+
+# Confere se a tarefa está usando o lançador oculto:
+(Get-ScheduledTask -TaskName TranscricoesTeamsSync).Actions |
+    Select-Object Execute, Arguments
 ```
 
+O `Execute` precisa terminar em `wscript.exe`. Se aparecer `powershell.exe` ou
+`pwsh.exe` ali, a tarefa ainda é a versão antiga — rode o instalador de novo.
+
 Linhas `ESPELHO ...: N copiado(s), M erro(s)` mostram o resultado de cada destino
-configurado; `ESPELHO ERRO ...` detalha o arquivo que falhou.
+configurado; `ESPELHO ERRO ...` detalha o arquivo que falhou. `INDEX: indexados
+N arquivo(s)` confirma que o visualizador foi regenerado.
+
+Um espelho que falha **não** interrompe o sync, de propósito — mas também não
+aparece em lugar nenhum além do log. Se você depende da cópia em outra pasta,
+confira essas linhas de vez em quando: um caminho de outra máquina no
+`espelhos.local.txt` faz o espelhamento falhar silenciosamente para sempre.
