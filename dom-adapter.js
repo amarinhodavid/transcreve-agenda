@@ -97,12 +97,56 @@
     // Genéricos (fallback para variação de tenant).
     '[data-tid*="hangup" i]',
     '[data-tid*="call-controls" i]',
+    // Domínio teams.cloud.microsoft (set/2026): a Microsoft reescreveu a UI de
+    // chamada e NENHUM dos data-tid acima sobreviveu — o diagnóstico deu 11 de 11
+    // com zero. Estes são mais largos de propósito: casam por prefixo/substring e
+    // por rótulo de acessibilidade, que muda menos que nome interno de componente.
+    '[data-tid*="leave" i]',
+    '[data-tid*="end-call" i]',
+    '[data-tid*="meeting-stage" i]',
+    '[data-tid*="calling" i]',
+    '[data-tid*="call-status" i]',
+    '[data-tid*="toggle-mute" i]',
+    '[data-tid*="microphone-button" i]',
+    '[data-tid*="camera-button" i]',
+    '[id*="hangup" i]',
+    // Rótulos de acessibilidade — PT-BR e EN. Sobrevivem a troca de data-tid
+    // porque o texto lido por leitor de tela é contrato com o usuário, não com o
+    // código; o Teams o mantém mesmo quando reescreve a marcação por baixo.
+    '[aria-label*="Sair" i][role="button"]',
+    '[aria-label*="Desligar" i]',
+    '[aria-label*="Encerrar reunião" i]',
+    '[aria-label*="Hang up" i]',
+    '[aria-label*="Leave call" i]',
+    '[aria-label*="Leave meeting" i]',
+  ];
+
+  // Painel de legendas ao vivo = prova de que há reunião em curso. Legenda não
+  // existe fora de chamada, então a presença do container é sinal de call tão
+  // válido quanto o botão de desligar — e MUITO mais estável, porque a Microsoft
+  // reescreve a barra de controles sem mexer no renderer de legenda (visto na
+  // migração para teams.cloud.microsoft: os 11 seletores de call zeraram e os de
+  // legenda continuaram casando todos).
+  //
+  // Só os data-tid ESPECÍFICOS entram aqui: o genérico `[data-tid^="closed-caption"]`
+  // casa 50 elementos incluindo botão de menu e painel de configuração, que existem
+  // fora da reunião e dariam call falso-positivo.
+  const CAPTIONS_AS_CALL_PROOF = [
+    '[data-tid="closed-caption-renderer-wrapper"]',
+    '[data-tid="closed-caption-v2-window-wrapper"]',
+    '[data-tid="closed-caption-v2-virtual-list-content"]',
+    '[data-tid="closed-captions-renderer"]',
   ];
 
   /**
-   * Estamos numa reunião ao vivo? true se qualquer sinal de UI de call casar.
+   * Estamos numa reunião ao vivo? true se qualquer sinal de UI de call casar, OU
+   * se o painel de legendas estiver presente (legenda não existe fora de chamada).
    * Snapshot booleano — o content script trata a ausência como "fora da call" (se
    * já viu a UI antes) ou "indeterminado" (se nunca viu neste tenant).
+   *
+   * As duas provas são independentes de propósito: a da barra de controles corta
+   * rápido quando o usuário desliga, a da legenda sobrevive a reescrita da UI. Em
+   * set/2026 só a segunda funcionava no domínio novo.
    */
   function isInCall(doc) {
     const target = doc || (typeof document !== 'undefined' ? document : null);
@@ -112,6 +156,13 @@
         if (target.querySelector(sel)) return true;
       } catch (_selectorNotSupported) {
         // seletor não suportado neste engine: tenta o próximo
+      }
+    }
+    for (const sel of CAPTIONS_AS_CALL_PROOF) {
+      try {
+        if (target.querySelector(sel)) return true;
+      } catch (_selectorNotSupported) {
+        // idem
       }
     }
     return false;

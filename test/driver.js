@@ -538,12 +538,15 @@ console.log('\nDetector de call — isInCall (dom-adapter)\n');
 
 function fakeDoc(html) {
   // mini-doc: só o querySelector que o isInCall usa, via um matcher simples de data-tid.
+  // O fake enxerga APENAS data-tid. Seletor que mira outro atributo (aria-label, id)
+  // não tem como casar aqui e devolve null — antes o regex falhava devolvendo needle
+  // vazio, e `indexOf('')` é 0, então QUALQUER elemento casava e todo doc virava call.
   return {
     querySelector: function (sel) {
-      const m = sel.match(/data-tid\*?=?"?([^"\]]+)"?/);
-      const needle = m ? m[1].replace(/"$/, '') : '';
-      // suporta [data-tid="x"] e [data-tid*="y" i]
-      const wildcard = sel.indexOf('*=') !== -1;
+      const m = sel.match(/\[data-tid(\*?)="([^"]+)"/);
+      if (!m) return null; // seletor não é de data-tid: fora do alcance deste fake
+      const wildcard = m[1] === '*';
+      const needle = m[2];
       const tids = html; // array de data-tid presentes
       for (const t of tids) {
         if (wildcard ? t.toLowerCase().indexOf(needle.toLowerCase()) !== -1 : t === needle) return {};
@@ -557,6 +560,27 @@ check('isInCall: com botão de hangup → true', D.isInCall(fakeDoc(['hangup-mai
 check('isInCall: com calling-stage → true', D.isInCall(fakeDoc(['calling-stage'])) === true);
 check('isInCall: DOM sem UI de call → false', D.isInCall(fakeDoc(['some-other-thing'])) === false);
 check('isInCall: doc sem querySelector → false (defensivo)', D.isInCall({}) === false);
+
+// Domínio teams.cloud.microsoft (set/2026): a UI de chamada foi reescrita e os 11
+// data-tid de call zeraram no diagnóstico, enquanto os de legenda casaram todos.
+// O painel de legendas passou a valer como prova de call.
+check('isInCall: painel de legendas presente → true (prova alternativa)',
+  D.isInCall(fakeDoc(['closed-caption-renderer-wrapper'])) === true);
+check('isInCall: virtual-list de legenda → true',
+  D.isInCall(fakeDoc(['closed-caption-v2-virtual-list-content'])) === true);
+check('isInCall: só menu de config de legenda → false (não prova reunião)',
+  D.isInCall(fakeDoc(['closed-captions-settings-menu-trigger-button'])) === false);
+check('isInCall: só botão de dispensar painel → false',
+  D.isInCall(fakeDoc(['captions-panel-dismiss-button'])) === false);
+check('isInCall: data-tid de leave → true (UI nova)',
+  D.isInCall(fakeDoc(['leave-call-button'])) === true);
+
+// Consequência no ciclo de vida: com a legenda provando call, o fim da reunião faz
+// o painel sumir → inCall vira false → finalize em CALL_GONE_GRACE_MS (25s).
+check('lifecycle: legenda sumiu e passou o grace → finalize',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: false, hasCaptions: false, sinceCaptionsGoneMs: 30000, sinceCallGoneMs: 30000, sinceLastSpeechMs: 30000 }) === 'finalize');
+check('lifecycle: legenda sumiu há 10s → pause, ainda não finaliza',
+  T.decideSessionLifecycle({ sessionOpen: true, inCall: false, hasCaptions: false, sinceCaptionsGoneMs: 10000, sinceCallGoneMs: 10000, sinceLastSpeechMs: 10000 }) === 'pause');
 
 // ============================================================================
 // Transição A → B: simula a sequência do background numa troca de reunião e prova
