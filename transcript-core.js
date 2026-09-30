@@ -20,7 +20,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const VERSION = '0.4.1';
+  const VERSION = '0.4.2';
   const COLLAPSE_WHITESPACE = /\s+/g;
   const MAX_HISTORY = 10;
   // Janela para colapsar parciais consecutivos do mesmo autor na exportação.

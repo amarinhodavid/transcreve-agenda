@@ -61,6 +61,7 @@
   let callGoneAt = 0; // quando a UI de call sumiu depois de vista (0 = na call/indef)
   let sawCallUi = false; // já vimos a UI de call nesta sessão (confia no "false" depois)
   let lastSpeechAt = 0; // última fala COMITADA (0 = sem sessão); base do corte por silêncio
+  let tituloEnviado = ''; // último título já mandado ao background (evita reenvio igual)
 
   // Recarregar/atualizar a extensão deixa ÓRFÃO todo content script já injetado:
   // o `chrome.runtime` dele aponta para um contexto morto e qualquer chamada lança
@@ -277,8 +278,25 @@
     // Abre a sessão no background (badge REC + startedAt) com título (só nome de
     // arquivo) e o meetingId de identidade. O id separa reuniões distintas mesmo se
     // AUTO_END/AUTO_START intercalarem. No manual o START já abriu; reenviar é idempotente.
+    tituloEnviado = '';
     sendToBackground({ type: 'AUTO_START', title: meetingTitle(), meetingId: meetingIdFor(currentThreadId) });
     if (found) attach(found);
+  }
+
+  /**
+   * Reenvia o título quando ele melhora depois da abertura. Duas razões: no
+   * `beginCapture` o painel ainda não tem falas, então o fallback por participantes
+   * não tem o que ler; e o Teams às vezes troca um título genérico pelo nome real da
+   * reunião alguns segundos depois de entrar. Só sobe quando muda de fato e quando o
+   * novo nome não é o fallback 'Reunião' — o background sobrescreve o título da
+   * sessão aberta, e o arquivo nasce com o último valor.
+   */
+  function reavaliarTitulo() {
+    if (!capturing) return;
+    const titulo = meetingTitle();
+    if (!titulo || titulo === 'Reunião' || titulo === tituloEnviado) return;
+    tituloEnviado = titulo;
+    sendToBackground({ type: 'AUTO_START', title: titulo, meetingId: meetingIdFor(currentThreadId) });
   }
 
   // Chamado a cada mutation do painel de legendas. Marca o pulso (watchdog) e varre.
@@ -363,6 +381,9 @@
     lastSpeechAt = Date.now(); // fala nova = reunião viva; zera o relógio do silêncio
     committedEntries.push(entry);
     storageSet({ [ENTRIES_KEY]: committedEntries });
+    // Com falas no painel, o título por participantes passa a existir. É aqui que
+    // a sessão aberta com nome genérico ganha o nome de quem está na call.
+    reavaliarTitulo();
   }
 
   function scan() {
@@ -431,10 +452,58 @@
     sendToBackground({ type: 'SESSION_STATUS', status });
   }
 
-  // Título da reunião a partir do document.title, tirando o sufixo do Teams.
+  // Nomes que o Teams põe no título quando a reunião NÃO tem nome próprio: a aba
+  // aberta ("Chat", "Calendar"), o app embutido ("Microsoft Copilot") ou o próprio
+  // usuário ("FULANO (Você)", numa call iniciada do chat 1:1). Virar nome de arquivo
+  // produz "Chat-ADRIANO-MARINHO-DAVID-(Você).md" para uma reunião real com outras
+  // pessoas — foi o que aconteceu em 29/09. Aqui eles são descartados e o nome sai
+  // dos participantes reais.
+  const TITULO_SEM_NOME = /^\s*(chat|calendar|calend[áa]rio|atividade|activity|chamadas|calls|equipes|teams|arquivos|files|microsoft\s+\w+|.*\(voc[êe]\))\s*$/i;
+
+  /**
+   * Nome legível da reunião para o arquivo. Diferente de `normalizeMeetingTitle`,
+   * que devolve uma CHAVE minúscula sem pontuação para comparar troca de reunião:
+   * aqui o texto vai para o disco, então preserva acento e caixa.
+   *
+   * Limpa, na ordem: sufixo do app, contador de não-lidas, prefixos de aba
+   * empilhados ("(3) Calendar | Chat | X"). Se o que sobra não nomeia reunião
+   * nenhuma, cai para os participantes visíveis no painel de legendas — quem está
+   * na call identifica melhor que o rótulo da aba.
+   */
   function meetingTitle() {
-    const raw = document.title || '';
-    return raw.replace(/\s*[|\-–—]\s*Microsoft Teams.*$/i, '').trim();
+    let s = (document.title || '').replace(/\s*[|\-–—]\s*Microsoft Teams.*$/i, '');
+    s = s.replace(/^\s*\(\s*\d+\s*\)\s*/, ''); // contador "(3) "
+    // Corta prefixo de aba repetidamente: o Teams empilha mais de um.
+    let prev;
+    do {
+      prev = s;
+      s = s.replace(/^\s*(chat|calendar|calend[áa]rio|atividade|activity|chamadas|calls|equipes|teams|arquivos|files)\s*\|\s*/i, '');
+    } while (s !== prev);
+    s = s.trim();
+    if (s && !TITULO_SEM_NOME.test(s)) return s;
+    const pelosParticipantes = tituloPorParticipantes();
+    return pelosParticipantes || 'Reunião';
+  }
+
+  // Últimos falantes distintos do painel, na ordem em que aparecem. Serve de nome
+  // quando o título não identifica a reunião. Sem painel ou sem nome reconhecível,
+  // devolve '' e quem chama decide o fallback.
+  function tituloPorParticipantes() {
+    if (!container) return '';
+    let itens;
+    try {
+      itens = DomAdapter.extractCaptionItems(container);
+    } catch (_semPainel) {
+      return '';
+    }
+    const nomes = [];
+    for (const item of itens) {
+      const nome = (item.speaker || '').trim();
+      if (!nome || nome === 'Desconhecido' || /^orador\s*\d+$/i.test(nome)) continue;
+      if (nomes.indexOf(nome) === -1) nomes.push(nome);
+      if (nomes.length === 3) break;
+    }
+    return nomes.join(', ');
   }
 
   // Monta o relatório de diagnóstico: varre o documento principal E os iframes

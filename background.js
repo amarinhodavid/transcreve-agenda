@@ -142,10 +142,25 @@ async function clearTranscript() {
   });
 }
 
+// Título que não nomeia a reunião: rótulo de aba, app embutido ou o próprio usuário
+// ("FULANO (Você)", numa call aberta do chat 1:1). O content script já tenta evitá-los,
+// mas a primeira gravação acontece antes de haver falas no painel — então aqui um
+// título assim pode ser SUBSTITUÍDO quando chega um melhor. Sem isso o arquivo nasce
+// com "Chat-ADRIANO-MARINHO-DAVID-(Você)" e não muda mais (bug de 29/09).
+function tituloEhGenerico(t) {
+  const s = String(t || '').trim();
+  if (!s) return true;
+  return /^(reuni[ãa]o|chat|calendar|calend[áa]rio|atividade|activity|chamadas|calls|equipes|teams|arquivos|files|microsoft\s+\w+|.*\(voc[êe]\))$/i.test(s);
+}
+
 async function setMeetingTitle(title) {
   const current = await chrome.storage.local.get(SESSION_KEY);
   const session = current[SESSION_KEY] || { startedAt: new Date().toISOString(), title: null };
-  if (!session.title && title) {
+  // Grava quando não há título, e TROCA quando o que está lá é genérico e o novo não é.
+  // Título específico nunca é sobrescrito: o Teams volta a pôr o rótulo da aba no
+  // document.title quando o usuário navega durante a reunião, e isso não pode apagar
+  // o nome real já capturado.
+  if (title && (!session.title || (tituloEhGenerico(session.title) && !tituloEhGenerico(title)))) {
     session.title = title;
     await chrome.storage.local.set({ [SESSION_KEY]: session });
   }
