@@ -20,7 +20,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const VERSION = '0.4.2';
+  const VERSION = '0.5.0';
   const COLLAPSE_WHITESPACE = /\s+/g;
   const MAX_HISTORY = 10;
   // Janela para colapsar parciais consecutivos do mesmo autor na exportação.
@@ -293,8 +293,13 @@
     return pad2(date.getHours()) + ':' + pad2(date.getMinutes()) + ':' + pad2(date.getSeconds());
   }
 
+  // Fallback neutro de propósito: a extensão captura Teams e Meet, e o título
+  // só chega aqui vazio quando nenhuma das duas plataformas deu nome à reunião.
+  // A pasta de destino e o prefixo de arquivo seguem com "Teams" no nome por
+  // compatibilidade: o script de e-mail monitora `Downloads\Transcricoes Teams`,
+  // e renomear quebraria a rotina sem ganho para quem lê o arquivo.
   function sessionTitle(session) {
-    return (session && session.title) || 'Reunião do Teams';
+    return (session && session.title) || 'Reunião';
   }
 
   function sessionStart(session) {
@@ -442,8 +447,14 @@
     } catch (_badEscape) {
       decoded = raw; // URL malformada: usa a crua
     }
-    const match = (raw + '\n' + decoded).match(/19:meeting_[A-Za-z0-9_\-]+/i);
-    return match ? match[0] : '';
+    const alvo = raw + '\n' + decoded;
+    const match = alvo.match(/19:meeting_[A-Za-z0-9_\-]+/i);
+    if (match) return match[0];
+    // Google Meet: o código da reunião é o próprio path (meet.google.com/xvi-pfqk-kav),
+    // três grupos de letras separados por hífen. É mais estável que o threadId do
+    // Teams, porque não muda com query nem com hash, e identifica a sala sozinho.
+    const meet = alvo.match(/meet\.google\.com\/([a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4})\b/i);
+    return meet ? 'meet:' + meet[1].toLowerCase() : '';
   }
 
   /**

@@ -22,7 +22,75 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const SELECTORS = {
+  /**
+   * Seletores do Google Meet, levantados do DOM real em 02/10/2026
+   * (meet.google.com, interface em pt-BR).
+   *
+   * O Meet é mais previsível que o Teams num ponto: o painel de legendas tem
+   * `role="region"` com `aria-label` legível, que é contrato de acessibilidade e
+   * muda menos que classe. As classes (`.a4cQT`, `.iOzk7`) são geradas por build
+   * e entram só como último fallback.
+   *
+   * Diferença estrutural que importa: no Meet o nome do falante vem COLADO ao
+   * texto no mesmo bloco ("VocêSome test."), sem elemento dedicado. Quem resolve
+   * isso é o `splitUppercaseName` do core, já usado no Teams pelo mesmo motivo.
+   */
+  const MEET_SELECTORS = {
+    captionsContainer: [
+      '[role="region"][aria-label="Legendas"]',
+      '[role="region"][aria-label="Captions"]',
+      '[role="region"][aria-label*="egenda" i]',
+      '[role="region"][aria-label*="aption" i]',
+      '[jsname="dsyhDe"]',
+      '.vNKgIf',
+    ],
+    captionItem: [
+      '.a4cQT',
+      '[jsname="dsyhDe"] > div > div',
+      '.iOzk7 > div > div',
+    ],
+    captionText: [
+      // No Meet não há elemento dedicado ao texto: o bloco traz nome + fala
+      // juntos, e o core separa. A lista fica vazia de propósito para o
+      // extractCaptionItems cair no caminho de texto do próprio nó.
+    ],
+    captionAuthor: [
+      '.zs7s8d',
+      '[class*="author" i]',
+    ],
+  };
+
+  // UI de chamada do Meet. Todos por aria-label, que o Google mantém estável por
+  // ser contrato com leitor de tela; os botões não têm data-tid nem id previsível.
+  const MEET_CALL_UI = [
+    '[aria-label*="Sair da chamada" i]',
+    '[aria-label*="Leave call" i]',
+    '[aria-label*="Desativar microfone" i]',
+    '[aria-label*="Turn off microphone" i]',
+    '[aria-label*="Ativar microfone" i]',
+    '[aria-label*="Turn on microphone" i]',
+    '[aria-label*="Controles de chamada" i]',
+    '[aria-label*="Call controls" i]',
+    '[jsname="vNB5le"]',
+  ];
+
+  // Em qual plataforma este documento está. Decide qual conjunto de seletores
+  // vale, em vez de misturar os dois numa cadeia só: seletor genérico de uma
+  // plataforma pode casar na outra e produzir falso positivo (um `[class*="author"]`
+  // do Meet casaria em qualquer coisa do Teams com "author" na classe).
+  function plataformaDe(doc) {
+    const target = doc || (typeof document !== 'undefined' ? document : null);
+    let host = '';
+    try {
+      host = (target && target.location && target.location.hostname) ||
+        (typeof location !== 'undefined' ? location.hostname : '');
+    } catch (_semLocation) {
+      host = '';
+    }
+    return /(^|\.)meet\.google\.com$/i.test(host) ? 'meet' : 'teams';
+  }
+
+  const TEAMS_SELECTORS = {
     // Container ESTÁVEL que embrulha as legendas ao vivo. O 1º
     // (`closed-caption-renderer-wrapper`) é o ancestral confirmado no Teams v2
     // (teams.microsoft.com/v2) — tem aria-label="Legendas ao Vivo" e NÃO é
@@ -72,9 +140,21 @@
     ],
   };
 
+  // Seletores da plataforma deste documento. `SELECTORS` continua apontando para
+  // os do Teams para não quebrar quem já importa o nome (testes e diagnóstico);
+  // o que o runtime usa é o resultado de selectorsDe().
+  const SELECTORS = TEAMS_SELECTORS;
+
+  function selectorsDe(doc) {
+    return plataformaDe(doc) === 'meet' ? MEET_SELECTORS : TEAMS_SELECTORS;
+  }
+
   // ID estável da pessoa no Teams v2: `data-person-mri="<guid>@..."`. Fica no
   // container do avatar (`closed-captions-v2-items-renderer`) dentro do item.
   // É a melhor chave de atribuição de falante — sobrevive à reciclagem de nós.
+  // O Meet não tem equivalente por fala: o `data-participant-id` existe, mas
+  // aponta o dispositivo do próprio usuário, não o autor de cada legenda. Lá a
+  // chave cai no nome textual, que é o fallback do speechKey.
   const MRI_ATTR = 'data-person-mri';
 
   // Sinais de que estamos numa REUNIÃO AO VIVO (call ativa). O ciclo de vida da
@@ -151,14 +231,18 @@
   function isInCall(doc) {
     const target = doc || (typeof document !== 'undefined' ? document : null);
     if (!target || typeof target.querySelector !== 'function') return false;
-    for (const sel of CALL_UI) {
+    const uiDaCall = plataformaDe(target) === 'meet' ? MEET_CALL_UI : CALL_UI;
+    for (const sel of uiDaCall) {
       try {
         if (target.querySelector(sel)) return true;
       } catch (_selectorNotSupported) {
         // seletor não suportado neste engine: tenta o próximo
       }
     }
-    for (const sel of CAPTIONS_AS_CALL_PROOF) {
+    const provaPorLegenda = plataformaDe(target) === 'meet'
+      ? MEET_SELECTORS.captionsContainer.slice(0, 2)
+      : CAPTIONS_AS_CALL_PROOF;
+    for (const sel of provaPorLegenda) {
       try {
         if (target.querySelector(sel)) return true;
       } catch (_selectorNotSupported) {
@@ -244,7 +328,7 @@
   function findCaptions(scope) {
     const target = scope || (typeof document !== 'undefined' ? document : null);
     if (!target) return { container: null, mode: null };
-    const bySelector = queryFirst(target, SELECTORS.captionsContainer);
+    const bySelector = queryFirst(target, selectorsDe(target).captionsContainer);
     if (bySelector) return { container: bySelector, mode: 'selector' };
     const heuristic = findByHeuristic(target);
     if (heuristic) return { container: heuristic, mode: 'heuristic' };
@@ -328,10 +412,14 @@
   function extractCaptionItems(container) {
     if (!container) return [];
 
-    let itemNodes = queryAll(container, SELECTORS.captionItem);
+    // A plataforma vem do documento que contém o container, não de `document`:
+    // com all_frames, este código roda em iframe cujo `document` pode ser outro.
+    const sel = selectorsDe(container.ownerDocument || null);
+
+    let itemNodes = queryAll(container, sel.captionItem);
     if (!itemNodes.length) {
       // Sem "item" reconhecível: usa os próprios blocos de texto como âncora.
-      itemNodes = queryAll(container, SELECTORS.captionText);
+      itemNodes = queryAll(container, sel.captionText);
     }
     if (!itemNodes.length) {
       // Último recurso (container heurístico): trata cada filho direto como uma
@@ -343,13 +431,13 @@
     const results = [];
     for (const node of itemNodes) {
       const authorEl =
-        queryFirst(node, SELECTORS.captionAuthor) ||
-        (node.parentElement ? queryFirst(node.parentElement, SELECTORS.captionAuthor) : null);
+        queryFirst(node, sel.captionAuthor) ||
+        (node.parentElement ? queryFirst(node.parentElement, sel.captionAuthor) : null);
 
       let speaker = authorEl ? textOf(authorEl) : '';
       if (!speaker) speaker = authorFromAria(node);
 
-      const textEl = queryFirst(node, SELECTORS.captionText);
+      const textEl = queryFirst(node, sel.captionText);
       let text;
       if (textEl) {
         text = textOf(textEl);
@@ -382,9 +470,11 @@
    * `count: -1` sinaliza seletor inválido naquele engine.
    */
   function diagnoseDocument(doc) {
+    const plataforma = plataformaDe(doc);
+    const selDaPlataforma = selectorsDe(doc);
     const selectorCounts = {};
-    for (const group of Object.keys(SELECTORS)) {
-      selectorCounts[group] = SELECTORS[group].map(function (sel) {
+    for (const group of Object.keys(selDaPlataforma)) {
+      selectorCounts[group] = selDaPlataforma[group].map(function (sel) {
         try {
           return { sel: sel, count: doc.querySelectorAll(sel).length };
         } catch (_selectorNotSupported) {
@@ -416,7 +506,7 @@
       // idem
     }
 
-    const callUi = CALL_UI.map(function (sel) {
+    const callUi = (plataformaDe(doc) === 'meet' ? MEET_CALL_UI : CALL_UI).map(function (sel) {
       try {
         return { sel: sel, count: doc.querySelectorAll(sel).length };
       } catch (_selectorNotSupported) {
@@ -426,6 +516,7 @@
 
     const found = findCaptions(doc);
     return {
+      plataforma: plataforma,
       selectorCounts: selectorCounts,
       tid: tid,
       classes: classes,
@@ -452,6 +543,10 @@
 
   return {
     SELECTORS,
+    TEAMS_SELECTORS,
+    MEET_SELECTORS,
+    plataformaDe,
+    selectorsDe,
     queryFirst,
     queryAll,
     findCaptions,

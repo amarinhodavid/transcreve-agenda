@@ -1,15 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "Transcreve Agenda — Transcrição do Teams",
-  "version": "0.4.2",
-  "description": "Transcreve reuniões do Microsoft Teams lendo as legendas ao vivo direto do navegador. Tudo local, nada é enviado para servidores externos.",
+  "name": "Transcreve Agenda — Transcrição do Teams e Meet",
+  "version": "0.5.0",
+  "description": "Transcreve reuniões do Microsoft Teams e do Google Meet lendo as legendas ao vivo direto do navegador. Tudo local, nada é enviado para servidores externos.",
   "permissions": ["storage", "downloads", "scripting", "activeTab"],
   "host_permissions": [
     "https://teams.microsoft.com/*",
     "https://*.teams.microsoft.com/*",
     "https://teams.live.com/*",
     "https://teams.cloud.microsoft/*",
-    "https://*.cloud.microsoft/*"
+    "https://*.cloud.microsoft/*",
+    "https://meet.google.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -35,7 +36,8 @@
         "https://*.teams.microsoft.com/*",
         "https://teams.live.com/*",
         "https://teams.cloud.microsoft/*",
-        "https://*.cloud.microsoft/*"
+        "https://*.cloud.microsoft/*",
+        "https://meet.google.com/*"
       ],
       "js": ["transcript-core.js", "dom-adapter.js", "content.js"],
       "run_at": "document_idle",

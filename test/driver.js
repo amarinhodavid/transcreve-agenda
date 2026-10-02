@@ -575,6 +575,41 @@ check('isInCall: só botão de dispensar painel → false',
 check('isInCall: data-tid de leave → true (UI nova)',
   D.isInCall(fakeDoc(['leave-call-button'])) === true);
 
+// ============================================================================
+console.log('\nGoogle Meet — seleção de plataforma e identidade\n');
+
+// Doc falso que só responde o hostname: é por ele que plataformaDe decide.
+function docDe(hostname) {
+  return { location: { hostname: hostname }, querySelector: function () { return null; } };
+}
+
+check('plataformaDe: meet.google.com → meet',
+  D.plataformaDe(docDe('meet.google.com')) === 'meet');
+check('plataformaDe: teams.cloud.microsoft → teams',
+  D.plataformaDe(docDe('teams.cloud.microsoft')) === 'teams');
+check('plataformaDe: teams.microsoft.com → teams',
+  D.plataformaDe(docDe('teams.microsoft.com')) === 'teams');
+check('plataformaDe: host desconhecido → teams (padrão seguro)',
+  D.plataformaDe(docDe('exemplo.com')) === 'teams');
+// Domínio que CONTÉM o nome mas não é o Meet não pode casar: seletor de uma
+// plataforma aplicado na outra gera falso positivo silencioso.
+check('plataformaDe: meet.google.com.falso.com → teams (não casa por substring)',
+  D.plataformaDe(docDe('meet.google.com.falso.com')) === 'teams');
+
+check('selectorsDe: meet devolve o container por role/aria-label',
+  D.selectorsDe(docDe('meet.google.com')).captionsContainer[0] === '[role="region"][aria-label="Legendas"]');
+check('selectorsDe: teams devolve o container por data-tid',
+  D.selectorsDe(docDe('teams.microsoft.com')).captionsContainer[0] === '[data-tid="closed-caption-renderer-wrapper"]');
+
+check('parseMeetingThreadId: código do Meet vira identidade',
+  T.parseMeetingThreadId('https://meet.google.com/xvi-pfqk-kav?authuser=0') === 'meet:xvi-pfqk-kav');
+check('parseMeetingThreadId: código do Meet sem query',
+  T.parseMeetingThreadId('https://meet.google.com/abc-defg-hij') === 'meet:abc-defg-hij');
+check('parseMeetingThreadId: threadId do Teams continua tendo precedência',
+  T.parseMeetingThreadId('https://teams.microsoft.com/v2/#/19:meeting_ABC123@thread.v2') === '19:meeting_ABC123');
+check('parseMeetingThreadId: URL do Meet sem código devolve vazio',
+  T.parseMeetingThreadId('https://meet.google.com/') === '');
+
 // Consequência no ciclo de vida: com a legenda provando call, o fim da reunião faz
 // o painel sumir → inCall vira false → finalize em CALL_GONE_GRACE_MS (25s).
 check('lifecycle: legenda sumiu e passou o grace → finalize',
