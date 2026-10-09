@@ -330,6 +330,13 @@
     if (!target) return { container: null, mode: null };
     const bySelector = queryFirst(target, selectorsDe(target).captionsContainer);
     if (bySelector) return { container: bySelector, mode: 'selector' };
+    // A heurística de rodapé NÃO vale no Meet. Ela aceita qualquer bloco do terço
+    // inferior com duas maiúsculas seguidas, e a barra do Meet é cheia de menu que
+    // casa: em 09/10/2026, com a legenda desligada, ela ancorou no seletor de
+    // microfone ("Microfone (4- fifine Microphone)… QCY H3 Pro") e gravou a reunião
+    // inteira observando um menu estático — 1 fala em 2 minutos, sem erro nenhum.
+    // Melhor devolver "não achei" e avisar do que capturar a coisa errada em silêncio.
+    if (plataformaDe(target) === 'meet') return { container: null, mode: null };
     const heuristic = findByHeuristic(target);
     if (heuristic) return { container: heuristic, mode: 'heuristic' };
     return { container: null, mode: null };
@@ -534,11 +541,27 @@
     'este aviso aparece, o DOM do Teams mudou — atualize o objeto SELECTORS em ' +
     'dom-adapter.js.';
 
-  function warnSelectorsMiss() {
+  const CAPTIONS_MISSING_MESSAGE_MEET =
+    '[Transcreve Agenda] Legendas desligadas — NADA está sendo capturado. ' +
+    'Ative no Meet: Mais opções (⋮) → Legendas → Ativar legendas. ' +
+    'Se as legendas JÁ estão ligadas e mesmo assim este aviso aparece, o DOM do ' +
+    'Meet mudou — rode scripts/inspecionar-meet.js e atualize MEET_SELECTORS em ' +
+    'dom-adapter.js.';
+
+  // A mensagem muda com a plataforma: o caminho de menu é outro, e mandar o
+  // usuário procurar "Idioma e fala" no Meet faz ele desistir achando que é bug.
+  function captionsMissingMessage(doc) {
+    return plataformaDe(doc) === 'meet'
+      ? CAPTIONS_MISSING_MESSAGE_MEET
+      : CAPTIONS_MISSING_MESSAGE;
+  }
+
+  function warnSelectorsMiss(doc) {
+    const msg = captionsMissingMessage(doc);
     if (typeof console !== 'undefined' && console.warn) {
-      console.warn(CAPTIONS_MISSING_MESSAGE);
+      console.warn(msg);
     }
-    return CAPTIONS_MISSING_MESSAGE;
+    return msg;
   }
 
   return {
@@ -557,6 +580,8 @@
     splitUppercaseName,
     diagnoseDocument,
     warnSelectorsMiss,
+    captionsMissingMessage,
     CAPTIONS_MISSING_MESSAGE,
+    CAPTIONS_MISSING_MESSAGE_MEET,
   };
 });

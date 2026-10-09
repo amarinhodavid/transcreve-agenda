@@ -610,6 +610,56 @@ check('parseMeetingThreadId: threadId do Teams continua tendo precedência',
 check('parseMeetingThreadId: URL do Meet sem código devolve vazio',
   T.parseMeetingThreadId('https://meet.google.com/') === '');
 
+// ----------------------------------------------------------------------------
+// Heurística de rodapé: vale no Teams, NÃO vale no Meet.
+//
+// Caso real de 09/10/2026: reunião do Meet com a legenda DESLIGADA. Nenhum
+// seletor casou, a heurística caiu no menu de seleção de microfone (que estava
+// aberto no terço inferior e tem maiúsculas de sobra) e a extensão gravou a
+// reunião inteira observando um menu estático: 1 fala em 2 minutos, sem erro.
+//
+// O doc abaixo REPRODUZ aquele DOM. Se a guarda de plataforma for removida do
+// findCaptions, estes dois testes ficam vermelhos.
+function docComMenuDeMicrofone(hostname) {
+  const menu = {
+    textContent: 'mic_none Microfone (4- fifine Microphone) Padrão do sistema ' +
+      'Grupo de microfones (Realtek(R) Audio) Headset (3- QCY H3 Pro) (Bluetooth)',
+    getBoundingClientRect: function () {
+      return { top: 700, width: 320, height: 240 }; // terço inferior da viewport
+    },
+  };
+  return {
+    location: { hostname: hostname },
+    querySelector: function () { return null; },      // nenhum seletor de legenda casa
+    querySelectorAll: function () { return [menu]; }, // só o menu existe na página
+  };
+}
+
+// A heurística precisa de window.innerHeight; no Node ela devolve null de saída,
+// então o teste só é honesto com o global presente.
+const tinhaWindow = typeof global.window !== 'undefined';
+const windowAntes = global.window;
+global.window = { innerHeight: 1080 };
+
+check('findCaptions: no Meet, menu de microfone NÃO vira container de legenda',
+  D.findCaptions(docComMenuDeMicrofone('meet.google.com')).container === null);
+check('findCaptions: no Meet sem legenda, o modo é nulo (não "heuristic")',
+  D.findCaptions(docComMenuDeMicrofone('meet.google.com')).mode === null);
+// Contraprova: no Teams a heurística continua valendo, senão o fix viraria
+// regressão silenciosa no canal que mais usamos.
+check('findCaptions: no Teams a heurística de rodapé continua ativa',
+  D.findCaptions(docComMenuDeMicrofone('teams.microsoft.com')).mode === 'heuristic');
+
+if (tinhaWindow) global.window = windowAntes; else delete global.window;
+
+// A mensagem de ausência tem que nomear o caminho de menu da plataforma certa:
+// mandar procurar "Idioma e fala" no Meet faz a pessoa desistir achando que é bug.
+check('captionsMissingMessage: no Meet cita o menu do Meet',
+  /Meet/.test(D.captionsMissingMessage(docDe('meet.google.com'))) &&
+  !/Idioma e fala/.test(D.captionsMissingMessage(docDe('meet.google.com'))));
+check('captionsMissingMessage: no Teams cita o menu do Teams',
+  /Idioma e fala/.test(D.captionsMissingMessage(docDe('teams.microsoft.com'))));
+
 // Consequência no ciclo de vida: com a legenda provando call, o fim da reunião faz
 // o painel sumir → inCall vira false → finalize em CALL_GONE_GRACE_MS (25s).
 check('lifecycle: legenda sumiu e passou o grace → finalize',

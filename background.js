@@ -35,9 +35,27 @@ function frameKey(sender) {
   return tab + ':' + frame;
 }
 
+// Frames que estão numa reunião ao vivo SEM legenda (nada sendo capturado).
+const framesSemLegenda = new Set();
+
 function setBadge(on) {
+  // O alerta vence o REC: estar em reunião sem legenda é a única situação em que
+  // o ícone precisa chamar atenção, e ela nunca coexiste com captura ativa.
+  if (framesSemLegenda.size) {
+    try {
+      chrome.action.setBadgeBackgroundColor({ color: '#e67e22' });
+      chrome.action.setTitle({
+        title: 'Transcreve Agenda — LEGENDA DESLIGADA\nVocê está em reunião e nada está sendo capturado. Ative as legendas.',
+      });
+    } catch (_semApi) {
+      // canal antigo sem a API: o texto do badge sozinho já dá o recado
+    }
+    chrome.action.setBadgeText({ text: '!' });
+    return;
+  }
   try {
     chrome.action.setBadgeBackgroundColor({ color: '#c0392b' });
+    chrome.action.setTitle({ title: 'Transcreve Agenda' });
   } catch (_noColor) {
     // alguns canais antigos não têm a API; o texto sozinho já dá o recado
   }
@@ -226,6 +244,16 @@ const HANDLERS = {
     await recomputeStatus();
     return { ok: true };
   },
+  CAPTIONS_OFF_IN_CALL: async function (msg, sender) {
+    framesSemLegenda.add(frameKey(sender));
+    await recomputeStatus();
+    return { ok: true };
+  },
+  CAPTIONS_OFF_CLEARED: async function (msg, sender) {
+    framesSemLegenda.delete(frameKey(sender));
+    await recomputeStatus();
+    return { ok: true };
+  },
 };
 
 // Handlers que mutam a SESSÃO precisam rodar um de cada vez: na troca de reunião
@@ -267,6 +295,11 @@ chrome.tabs.onRemoved.addListener(async function (tabId) {
       if (frameStatus.get(key).capturing) wasCapturing = true;
       frameStatus.delete(key);
     }
+  }
+  // Sem isto o badge de alerta fica travado em '!' depois de fechar a aba da
+  // reunião, porque o frame que o acendeu nunca manda o CAPTIONS_OFF_CLEARED.
+  for (const key of Array.from(framesSemLegenda)) {
+    if (key.indexOf(tabId + ':') === 0) framesSemLegenda.delete(key);
   }
   if (wasCapturing) await finalizeSession();
   await recomputeStatus();

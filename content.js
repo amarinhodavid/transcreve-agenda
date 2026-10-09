@@ -26,6 +26,10 @@
 
   // De quanto em quanto tempo, no máximo, carimbamos "vi a UI de call" no storage.
   const CALL_MARK_THROTTLE_MS = 10000;
+  // De quanto em quanto tempo repetir o aviso de "em reunião e sem legenda".
+  // 60s: curto o bastante para a pessoa ver no começo da reunião, enquanto ainda
+  // dá tempo de ligar a legenda, e longo o bastante para não poluir o console.
+  const AVISO_LEGENDA_OFF_MS = 60000;
 
   const ENTRIES_KEY = 'entries';
   const CAPSTATE_KEY = 'capState';
@@ -58,6 +62,7 @@
   let callSeenAt = 0; // carimbo compartilhado: algum frame viu a UI de call
   let lastCallMark = 0; // último carimbo QUE ESTE frame escreveu (throttle)
   let captionsGoneAt = 0; // quando o painel de legendas sumiu (0 = presente)
+  let legendaDesligadaAvisadaEm = 0; // último aviso de "em reunião e sem legenda"
   let callGoneAt = 0; // quando a UI de call sumiu depois de vista (0 = na call/indef)
   let sawCallUi = false; // já vimos a UI de call nesta sessão (confia no "false" depois)
   let lastSpeechAt = 0; // última fala COMITADA (0 = sem sessão); base do corte por silêncio
@@ -153,8 +158,9 @@
       detectionMode = found.mode || 'selector';
       captionsGoneAt = 0;
       warnedMiss = false;
+      legendaDesligadaAvisadaEm = 0;
     } else {
-      if (!warnedMiss) { DomAdapter.warnSelectorsMiss(); warnedMiss = true; }
+      if (!warnedMiss) { DomAdapter.warnSelectorsMiss(document); warnedMiss = true; }
       if (!captionsGoneAt) captionsGoneAt = now;
     }
 
@@ -175,6 +181,24 @@
     if (callNow) { sawCallUi = true; callGoneAt = 0; }
     else if (sawCallUi && !callGoneAt) callGoneAt = now;
     const inCall = callNow ? true : (sawCallUi ? false : null);
+
+    // Reunião ao vivo E sem legenda = nada está sendo capturado, e dá para
+    // resolver AGORA ligando a legenda. É a única combinação acionável: fora da
+    // call a ausência é normal. Em 09/10/2026 uma reunião inteira do Meet se
+    // perdeu assim, sem erro nenhum, porque a legenda não tinha sido ativada.
+    // Repete a cada AVISO_LEGENDA_OFF_MS para não virar uma linha só perdida no
+    // console de uma aba que ninguém olha.
+    const emReuniaoSemLegenda = inCall === true && !hasCaptions;
+    if (emReuniaoSemLegenda) {
+      if (!legendaDesligadaAvisadaEm || now - legendaDesligadaAvisadaEm >= AVISO_LEGENDA_OFF_MS) {
+        legendaDesligadaAvisadaEm = now;
+        console.warn(DomAdapter.captionsMissingMessage(document));
+        sendToBackground({ type: 'CAPTIONS_OFF_IN_CALL' });
+      }
+    } else if (legendaDesligadaAvisadaEm && !emReuniaoSemLegenda) {
+      legendaDesligadaAvisadaEm = 0;
+      sendToBackground({ type: 'CAPTIONS_OFF_CLEARED' });
+    }
 
     // Sinais de fronteira entre reuniões — só enquanto há sessão aberta.
     let threadSwitch = false;
