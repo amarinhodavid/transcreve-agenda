@@ -26,3 +26,6 @@ scripts/espelhos.local.txt
 
 # Estado local da rotina de e-mail (o que ja foi enviado) — nao pertence ao repo
 scripts/enviados-email.txt
+
+# Segundo clone local do mesmo repositório
+Transcreve-Agenda/
